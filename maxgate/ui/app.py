@@ -28,8 +28,6 @@ CSS = """
 .stElementContainer:has(style):not(:has(iframe)) {display:none}
 [class*="st-key-field_"] {gap:6px!important}
 .stApp [data-testid="stHeadingWithActionElements"] a {display:none}
-.st-key-actions [data-testid="stHorizontalBlock"] {flex-wrap:nowrap;gap:8px}
-.st-key-actions [data-testid="stColumn"] {min-width:0!important}
 [class*="st-key-account_row_"] [data-testid="stHorizontalBlock"] {flex-wrap:nowrap;align-items:center;gap:8px}
 [class*="st-key-account_row_"] [data-testid="stColumn"] {min-width:0!important}
 [class*="st-key-account_row_"] [data-testid="stColumn"]:first-child {flex:1 1 70%!important;width:70%!important}
@@ -77,6 +75,24 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 .st-key-login_panel {max-width:380px;margin:18vh auto 0;padding:28px 24px;border-radius:12px!important;background:white}
 [data-testid="stAppViewContainer"]:has(.st-key-login_panel) {background:#fafafa}
 .countdown {font-size:40px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.2}
+/* Shrink action columns to their buttons; let the descriptive column wrap. */
+:is(.st-key-account_heading,.st-key-settings_heading,.st-key-danger) > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {flex-wrap:wrap;gap:8px;align-items:flex-start}
+:is(.st-key-account_heading,.st-key-settings_heading,.st-key-danger) > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {flex:1 1 240px!important;min-width:0!important;width:auto!important}
+:is(.st-key-account_heading,.st-key-settings_heading,.st-key-danger) > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {flex:0 0 auto!important;min-width:0!important;width:auto!important;margin-left:auto}
+.st-key-actions {width:320px!important;max-width:100%}
+.st-key-actions:has([class*="st-key-resume_"]) {width:350px!important}
+.st-key-actions [data-testid="stHorizontalBlock"] {flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.st-key-actions [data-testid="stColumn"] {flex:0 0 auto!important;min-width:0!important}
+.st-key-actions [data-testid="stColumn"]:nth-child(1) {width:90px!important}
+.st-key-actions:has([class*="st-key-resume_"]) [data-testid="stColumn"]:nth-child(1) {width:120px!important}
+.st-key-actions [data-testid="stColumn"]:nth-child(2) {width:134px!important}
+.st-key-actions [data-testid="stColumn"]:nth-child(3) {width:80px!important}
+.st-key-settings_heading > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {width:190px!important}
+.st-key-danger > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {width:150px!important}
+.st-key-topbar [data-testid="stHorizontalBlock"] {gap:8px;flex-wrap:wrap}
+.st-key-topbar [data-testid="stColumn"]:first-child {flex:1 1 auto!important;width:auto!important}
+.st-key-topbar [data-testid="stColumn"]:nth-child(2) {flex:0 0 auto!important;width:max-content!important;margin-left:auto}
+.st-key-topbar [data-testid="stColumn"]:last-child {flex:0 0 80px!important;width:80px!important}
 /* Keep chat actions together when the row wraps on narrow screens. */
 [class*="st-key-chat_row_"] {padding:12px 0;border-bottom:1px solid #f4f4f5}
 [data-testid="stLayoutWrapper"]:last-child > [class*="st-key-chat_row_"] {border-bottom:0}
@@ -92,7 +108,6 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 .event small {color:#a1a1aa}.event .badge {font-size:11px}
 @media(max-width:640px) {
  .stMainBlockContainer {padding:0 16px 24px}
- .st-key-topbar [data-testid="stColumn"] {flex:1 1 auto!important;width:auto!important}
  .brand {font-size:15px;gap:6px}.bridge {font-size:10px;padding:3px 5px}
  .event {grid-template-columns:90px 1fr}.event code {grid-column:1/-1}
  .st-key-login_panel {margin-top:15vh}
@@ -387,11 +402,23 @@ def login_wizard(client, account, events, *, disabled=False):
 
 def account_settings(client, account, *, disabled=False):
     account_id = account["id"]
-    with st.container(border=True):
-        st.subheader("Настройки")
-        st.caption(
-            "Смена Owner или режима Inbox потребует нового /start. Старые Topic сохранятся в Telegram."
-        )
+    with st.container(border=True, key="settings"):
+        with st.container(key="settings_heading"):
+            left, right = st.columns([3, 1])
+            with left:
+                st.subheader("Настройки")
+                st.caption(
+                    "Смена Owner или режима Inbox потребует нового /start. "
+                    "Старые Topic сохранятся в Telegram."
+                )
+            with right:
+                save = button(
+                    "Сохранить настройки",
+                    f"save_{account_id}",
+                    disabled=disabled,
+                    class_name="w-full",
+                )
+
         columns = st.columns(4)
         with columns[0]:
             name = field("Название Account", f"name_{account_id}", account["name"])
@@ -406,7 +433,7 @@ def account_settings(client, account, *, disabled=False):
                 label="Переносить Channel",
                 key=f"channels_{account_id}",
             )
-        if button("Сохранить настройки", f"save_{account_id}", disabled=disabled):
+        if save:
             if (parsed_owner := owner_id(owner)) is not None:
                 invoke(
                     client,
@@ -429,7 +456,7 @@ def account_settings(client, account, *, disabled=False):
                 "Удалить Account",
                 confirmation_key("delete", account_id),
                 variant="outline",
-                class_name="text-red-600 border-red-200",
+                class_name="w-full text-red-600 border-red-200",
                 disabled=disabled,
             )
         confirm_action(client, account_id, "delete", clicked, disabled=disabled)
@@ -529,44 +556,53 @@ def account_card(client, account, events, chats, *, disabled=False):
     if button("← Все Account", f"back_{account_id}", variant="ghost", class_name="text-zinc-500"):
         st.session_state.pop("selected_account", None)
         st.rerun()
-    left, right = st.columns([3, 2.4])
-    with left:
-        markup(
-            f'<div class="account-title"><h1>{escape(account["name"])}</h1>{badge(STATES[state], state)}</div>'
-        )
-        st.caption(
-            f"Account #{account_id} · MAX {account['phone']} · Inbox {account['inbox_chat_id'] or 'ещё не подключён'} · {account['inbox_mode']}"
-        )
-    with right, st.container(key="actions"):
-        actions = st.columns([1.5 if state == "paused" else 1, 1.6, 0.8])
-        with actions[0]:
-            if state == "paused":
-                if button("Возобновить", f"resume_{account_id}", disabled=disabled):
-                    invoke(client, "POST", path + "/resume")
-            elif button(
-                "Ⅱ Пауза",
-                f"pause_{account_id}",
-                variant="outline",
-                disabled=disabled or state not in {"active", "logging_in", "password_required"},
-            ):
-                invoke(client, "POST", path + "/pause")
-        with actions[1]:
-            if state in {"active", "paused"}:
-                clicked = button(
-                    "Войти заново",
-                    confirmation_key("login_again", account_id),
+    with st.container(key="account_heading"):
+        left, right = st.columns([3, 2.4])
+        with left:
+            markup(
+                f'<div class="account-title"><h1>{escape(account["name"])}</h1>{badge(STATES[state], state)}</div>'
+            )
+            st.caption(
+                f"Account #{account_id} · MAX {account['phone']} · Inbox {account['inbox_chat_id'] or 'ещё не подключён'} · {account['inbox_mode']}"
+            )
+        with right, st.container(key="actions"):
+            actions = st.columns([1.5 if state == "paused" else 1, 1.6, 0.8])
+            with actions[0]:
+                if state == "paused":
+                    if button(
+                        "Возобновить",
+                        f"resume_{account_id}",
+                        disabled=disabled,
+                        class_name="w-full",
+                    ):
+                        invoke(client, "POST", path + "/resume")
+                elif button(
+                    "Ⅱ Пауза",
+                    f"pause_{account_id}",
                     variant="outline",
+                    class_name="w-full",
+                    disabled=disabled or state not in {"active", "logging_in", "password_required"},
+                ):
+                    invoke(client, "POST", path + "/pause")
+            with actions[1]:
+                if state in {"active", "paused"}:
+                    clicked = button(
+                        "Войти заново",
+                        confirmation_key("login_again", account_id),
+                        variant="outline",
+                        class_name="w-full",
+                        disabled=disabled,
+                    )
+                    confirm_action(client, account_id, "login_again", clicked, disabled=disabled)
+            with actions[2]:
+                clicked = button(
+                    "Logout",
+                    confirmation_key("logout", account_id),
+                    variant="secondary",
+                    class_name="w-full",
                     disabled=disabled,
                 )
-                confirm_action(client, account_id, "login_again", clicked, disabled=disabled)
-        with actions[2]:
-            clicked = button(
-                "Logout",
-                confirmation_key("logout", account_id),
-                variant="secondary",
-                disabled=disabled,
-            )
-            confirm_action(client, account_id, "logout", clicked, disabled=disabled)
+                confirm_action(client, account_id, "logout", clicked, disabled=disabled)
     if account.get("state_reason"):
         st.error("Причина состояния: " + account["state_reason"])
     if state == "active" and account["inbox_chat_id"] is None:
@@ -599,7 +635,7 @@ def topbar(online):
                 f"{'Bridge online' if online else 'Bridge недоступен'}</span>"
             )
         with logout:
-            if button("Выйти", "operator_logout", variant="secondary"):
+            if button("Выйти", "operator_logout", variant="secondary", class_name="w-full"):
                 st.session_state.clear()
                 st.rerun()
 
