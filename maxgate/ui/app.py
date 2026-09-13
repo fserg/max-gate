@@ -77,6 +77,16 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 .st-key-login_panel {max-width:380px;margin:18vh auto 0;padding:28px 24px;border-radius:12px!important;background:white}
 [data-testid="stAppViewContainer"]:has(.st-key-login_panel) {background:#fafafa}
 .countdown {font-size:40px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.2}
+/* Keep chat actions together when the row wraps on narrow screens. */
+[class*="st-key-chat_row_"] {padding:12px 0;border-bottom:1px solid #f4f4f5}
+[data-testid="stLayoutWrapper"]:last-child > [class*="st-key-chat_row_"] {border-bottom:0}
+[class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {flex-wrap:wrap;align-items:center;gap:8px}
+[class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {flex:1 1 240px!important;min-width:0!important;width:auto!important;overflow-wrap:anywhere}
+[class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {flex:0 0 228px!important;min-width:0!important;width:228px!important;margin-left:auto}
+[class*="st-key-chat_row_"] [data-testid="stColumn"]:last-child:not(:has([class*="st-key-topic_"])) {flex-basis:86px!important;width:86px!important}
+[class*="st-key-chat_actions_"] > [class*="st-key-topic_"] {flex:0 0 134px!important;width:134px!important}
+[class*="st-key-chat_actions_"] > [class*="st-key-mute_"] {flex:0 0 86px!important;width:86px!important}
+[class*="st-key-chat_actions_"] {gap:8px!important;flex-wrap:nowrap!important;justify-content:flex-end}
 .event {display:grid;grid-template-columns:110px 80px minmax(0,1fr);gap:12px;padding:12px 0;border-bottom:1px solid #f4f4f5;font-size:13px}
 .event code {white-space:pre-wrap;overflow-wrap:anywhere;color:#3f3f46;font-size:12.5px;background:none}
 .event small {color:#a1a1aa}.event .badge {font-size:11px}
@@ -435,45 +445,64 @@ def chat_links(client, account, chats, *, disabled=False):
         if not chats:
             st.info("ChatLink появятся после первого входа в MAX")
         for link in chats:
-            label, topic, action = st.columns([5, 2, 1])
-            with label:
-                title = escape(str(link["max_title"] or link["max_chat_id"]))
-                markup(
-                    f'<div style="opacity:{0.55 if link["muted"] else 1};font-weight:500">{title}</div>'
-                )
-                kind = {"DIALOG": "Dialog", "CHAT": "Group", "CHANNEL": "Channel"}.get(
-                    link["max_chat_type"], link["max_chat_type"]
-                )
-                markup(
-                    badge(kind)
-                    + " "
-                    + badge(
-                        f"Topic {link['topic_id']}"
-                        if link["topic_id"] is not None
-                        else "нет Topic",
-                        "topic" if link["topic_id"] is not None else "",
+            with st.container(key=f"chat_row_{link['id']}"):
+                label, actions = st.columns([1, 1])
+                with label:
+                    title = escape(str(link["max_title"] or link["max_chat_id"]))
+                    markup(
+                        f'<div style="opacity:{0.55 if link["muted"] else 1};font-weight:500">{title}</div>'
                     )
-                    + (" " + badge("Muted", "muted") if link["muted"] else "")
-                )
-            with topic:
-                if link["topic_id"] is None and button(
-                    "Создать Topic", f"topic_{link['id']}", variant="outline", disabled=disabled
-                ):
-                    if account["inbox_chat_id"] is None:
-                        st.error("Сначала подключите Inbox: Owner должен отправить /start боту.")
-                    else:
-                        invoke(
-                            client, "POST", f"/accounts/{account['id']}/chats/{link['id']}/topic"
+                    kind = {"DIALOG": "Dialog", "CHAT": "Group", "CHANNEL": "Channel"}.get(
+                        link["max_chat_type"], link["max_chat_type"]
+                    )
+                    markup(
+                        badge(kind)
+                        + " "
+                        + badge(
+                            f"Topic {link['topic_id']}"
+                            if link["topic_id"] is not None
+                            else "нет Topic",
+                            "topic" if link["topic_id"] is not None else "",
                         )
-            with action:
-                if button(
-                    "Unmute" if link["muted"] else "Mute",
-                    f"mute_{link['id']}",
-                    variant="ghost",
-                    disabled=disabled,
-                ):
-                    verb = "unmute" if link["muted"] else "mute"
-                    invoke(client, "POST", f"/accounts/{account['id']}/chats/{link['id']}/{verb}")
+                        + (" " + badge("Muted", "muted") if link["muted"] else "")
+                    )
+                with actions:
+                    with st.container(
+                        key=f"chat_actions_{link['id']}",
+                        horizontal=True,
+                        horizontal_alignment="right",
+                        gap="small",
+                    ):
+                        if link["topic_id"] is None and button(
+                            "Создать Topic",
+                            f"topic_{link['id']}",
+                            variant="outline",
+                            class_name="w-full",
+                            disabled=disabled,
+                        ):
+                            if account["inbox_chat_id"] is None:
+                                st.error(
+                                    "Сначала подключите Inbox: Owner должен отправить /start боту."
+                                )
+                            else:
+                                invoke(
+                                    client,
+                                    "POST",
+                                    f"/accounts/{account['id']}/chats/{link['id']}/topic",
+                                )
+                        if button(
+                            "Unmute" if link["muted"] else "Mute",
+                            f"mute_{link['id']}",
+                            variant="secondary",
+                            class_name="w-full",
+                            disabled=disabled,
+                        ):
+                            verb = "unmute" if link["muted"] else "mute"
+                            invoke(
+                                client,
+                                "POST",
+                                f"/accounts/{account['id']}/chats/{link['id']}/{verb}",
+                            )
 
 
 def journal(events):
@@ -532,7 +561,10 @@ def account_card(client, account, events, chats, *, disabled=False):
                 confirm_action(client, account_id, "login_again", clicked, disabled=disabled)
         with actions[2]:
             clicked = button(
-                "Logout", confirmation_key("logout", account_id), variant="ghost", disabled=disabled
+                "Logout",
+                confirmation_key("logout", account_id),
+                variant="secondary",
+                disabled=disabled,
             )
             confirm_action(client, account_id, "logout", clicked, disabled=disabled)
     if account.get("state_reason"):
@@ -567,7 +599,7 @@ def topbar(online):
                 f"{'Bridge online' if online else 'Bridge недоступен'}</span>"
             )
         with logout:
-            if button("Выйти", "operator_logout", variant="ghost"):
+            if button("Выйти", "operator_logout", variant="secondary"):
                 st.session_state.clear()
                 st.rerun()
 
