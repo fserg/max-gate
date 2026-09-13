@@ -26,12 +26,11 @@ import datetime as dt
 import logging
 import os
 import shlex
+import ssl
 import sys
 import time
-from pathlib import Path
-
-import ssl
 from importlib import resources
+from pathlib import Path
 from urllib.parse import urlparse
 
 import aiohttp

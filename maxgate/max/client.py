@@ -1,0 +1,170 @@
+import asyncio
+from contextlib import suppress
+from pathlib import Path
+
+from aiohttp import ClientError
+from pymax import Client, File, Photo, Video, Voice
+from pymax.config import ExtraConfig
+from pymax.versions.catalog import VersionCatalog
+
+from maxgate.domain import Attachment, RelayMessage, escape_max
+from maxgate.max.media import download
+from maxgate.max.providers import PasswordProvider, SavedSessionOnly, SmsCodeProvider
+
+
+class MaxClient:
+    def __init__(self, client, sms=None, password=None):
+        self.client = client
+        self.sms = sms or SmsCodeProvider()
+        self.password = password or PasswordProvider()
+        self.ready = asyncio.Event()
+        self.task: asyncio.Task | None = None
+
+        @client.on_start()
+        async def on_start(_):
+            self.ready.set()
+
+    @classmethod
+    async def create(
+        cls, phone, store, data_dir: Path, app_version=None, *, saved_session_only=False
+    ):
+        catalog = VersionCatalog(remote=True)
+        try:
+            await asyncio.wait_for(catalog.load(), 20)
+        except (ClientError, OSError, TimeoutError, ValueError):
+            catalog = VersionCatalog()
+            await catalog.load()
+        catalog.remote = False  # каталог уже загружен для этого запуска
+        version = app_version or max(catalog.versions, key=lambda v: tuple(map(int, v.split("."))))
+        sms, password = SmsCodeProvider(), PasswordProvider()
+        client = Client(
+            phone=phone,
+            work_dir=str(data_dir),
+            app_version=version,
+            catalog=catalog,
+            sms_code_provider=sms,
+            password_provider=password,
+            auth_flow=SavedSessionOnly() if saved_session_only else None,
+            extra_config=ExtraConfig(store=store, relogin=False, log_level="CRITICAL"),
+        )
+        return cls(client, sms, password)
+
+    def on(self, event: str, callback):
+        if event not in {
+            "start",
+            "message",
+            "message_edit",
+            "message_delete",
+            "chat_update",
+            "disconnect",
+            "error",
+        }:
+            raise ValueError("Unsupported MAX event")
+        getattr(self.client, f"on_{event}")()(callback)
+
+    def start(self) -> asyncio.Task:
+        if self.task is None or self.task.done():
+            self.ready.clear()
+            self.task = asyncio.create_task(self.client.start())
+        return self.task
+
+    async def wait_ready(self, timeout=60):
+        task = self.start()
+        waiter = asyncio.create_task(self.ready.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {task, waiter}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+            if task in done:
+                await task
+                raise RuntimeError("MAX stopped before login")
+            if waiter not in done:
+                raise TimeoutError("MAX login timed out")
+        finally:
+            waiter.cancel()
+            with suppress(asyncio.CancelledError):
+                await waiter
+
+    async def stop(self):
+        if self.task is not None:
+            self.task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.task
+            self.task = None
+        self.ready.clear()
+
+    async def fetch_chats(self):
+        return await self.client.fetch_chats()
+
+    async def fetch_history(self, chat_id: int, **kwargs):
+        messages = await self.client.fetch_history(chat_id, **kwargs)
+        return [
+            m.model_copy(update={"chat_id": chat_id}) if m.chat_id is None else m for m in messages
+        ]
+
+    async def download_attachment(self, chat_id, message_id, attachment, dest: Path):
+        if isinstance(attachment, str):
+            return await download(attachment, dest)
+        kind = attachment.type
+        if kind == "FILE":
+            info = await self.client.get_file_by_id(
+                chat_id=chat_id, message_id=message_id, file_id=attachment.file_id
+            )
+            url = info.url if info else None
+        elif kind == "VIDEO":
+            info = await self.client.get_video_by_id(
+                chat_id=chat_id, message_id=message_id, video_id=attachment.video_id
+            )
+            url = info.url if info else None
+        else:
+            url = getattr(attachment, "base_url", None) or getattr(attachment, "url", None)
+            if kind == "STICKER":
+                url = getattr(attachment, "lottie_url", None) or url
+        if not url:
+            raise ValueError("Attachment has no downloadable URL")
+        return await download(url, dest)
+
+    async def send(self, chat_id: int, message: RelayMessage):
+        constructors = {
+            "photo": Photo,
+            "video": Video,
+            "document": File,
+            "audio": File,
+            "voice": Voice,
+        }
+        attachments = []
+        for attachment in message.attachments:
+            kwargs = dict(path=str(attachment.source), name=attachment.name)
+            if attachment.kind == "voice" and attachment.duration is not None:
+                kwargs["duration"] = attachment.duration
+            attachments.append(constructors[attachment.kind](**kwargs))
+        try:
+            return await self.client.send_message(
+                chat_id,
+                text=escape_max(message.text) or None,
+                reply_to=message.reply_to,
+                attachments=attachments or None,
+            )
+        except Exception:
+            if not any(a.kind == "voice" for a in message.attachments):
+                raise
+            # PyMax 2.4.1 иногда не завершает загрузку Voice (исследование, §6).
+            fallback = RelayMessage(
+                text=message.text + "\n🎤 Голосовое сообщением-файлом",
+                reply_to=message.reply_to,
+                attachments=[
+                    Attachment(
+                        "document" if a.kind == "voice" else a.kind,
+                        a.source,
+                        a.name,
+                        a.size,
+                        a.mime,
+                        a.duration,
+                    )
+                    for a in message.attachments
+                ],
+            )
+            return await self.send(chat_id, fallback)
+
+    async def edit(self, chat_id: int, message_id: int, text: str):
+        return await self.client.edit_message(chat_id, message_id, text=escape_max(text))
