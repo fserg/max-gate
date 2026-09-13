@@ -49,6 +49,7 @@ class RelayEngine:
         self.last_event_time = None
         self.attachment_signatures = {}
         self.closed = False
+        self.deleted_messages = set()
 
     async def inbox_bound(self):
         self.bound_at = self.clock()
@@ -148,12 +149,14 @@ class RelayEngine:
 
             self._submit(link, run)
 
-    async def max_to_tg(self, link, message, progress, *, history=False, timestamp=False):
+    async def max_to_tg(
+        self, link, message, progress, *, history=False, timestamp=False, reload=False
+    ):
         link = await self.store.chat(link_id=link.id)
         if not history and not self._allowed(link):
             return
         existing = await self.store.messages(link.id, max_id=message.id)
-        if existing and not progress.get("sent"):
+        if existing and not progress.get("sent") and not reload:
             return  # MessageLink покрывает Echo и повторные события/Catch-up.
         sender = await self.max.user_name(message.sender) if message.sender is not None else "?"
         relay = render(
@@ -223,7 +226,7 @@ class RelayEngine:
             history,
         )
         await self.store.link_messages(
-            link.id, message.id, [m.message_id for m in sent], "max_to_tg"
+            link.id, message.id, [m.message_id for m in sent], "max_to_tg", replace_existing=reload
         )
         if not history:
             await self.store.change_chat(link.id, last_relayed_time=message.time)
@@ -365,7 +368,7 @@ class RelayEngine:
 
                 self._submit(link, run)
 
-    async def history(self, link, count):
+    async def history(self, link, count, *, reload=False):
         count = max(1, min(100, count))
         state = {}
 
@@ -380,7 +383,9 @@ class RelayEngine:
                 if not progress.get("done"):
 
                     async def relay_one(message=message, progress=progress):
-                        await self.max_to_tg(link, message, progress, history=True, timestamp=True)
+                        await self.max_to_tg(
+                            link, message, progress, history=True, timestamp=True, reload=reload
+                        )
 
                     # Stay in this ChatLink's worker so live events cannot overtake history.
                     # Each message gets independent retries and a final failure Note.
@@ -454,7 +459,7 @@ class RelayEngine:
             async def run():
                 current = await self.store.chat(link_id=link.id)
                 for message_id in event.message_ids:
-                    if message_id in delivered:
+                    if message_id in delivered or (link.id, message_id) in self.deleted_messages:
                         continue
                     links = [
                         r
@@ -598,6 +603,50 @@ class RelayEngine:
         if link and title is not None:
             await self.store.change_chat(link.id, renamed_by_owner=True)
 
+    async def delete_command(self, link, command):
+        reply = getattr(command, "reply_to_message", None)
+        if reply is None:
+            await self.note(
+                link,
+                "ℹ️ Используйте /delete ответом на сообщение в Topic.",
+                reply_to=command.message_id,
+            )
+            return
+        progress = {}
+
+        async def run():
+            if "rows" not in progress:
+                rows = await self.store.messages(link.id, tg_id=reply.message_id)
+                if rows:
+                    rows = await self.store.messages(link.id, max_id=rows[0].max_message_id)
+                progress["rows"] = rows
+            rows = progress["rows"]
+            if not rows:
+                await self.note(
+                    link,
+                    "ℹ️ Используйте /delete ответом на сообщение с MessageLink в этом Topic.",
+                    reply_to=command.message_id,
+                )
+                return
+            max_id = rows[0].max_message_id
+            if not progress.get("max_deleted"):
+                if not await self.max.delete(link.max_chat_id, max_id):
+                    raise RuntimeError("MAX не подтвердил удаление сообщения")
+                progress["max_deleted"] = True
+                # Echo uses the same worker and may already be queued. Keep this marker
+                # if Telegram cleanup fails; after cleanup the absent links suppress Echo.
+                self.deleted_messages.add((link.id, max_id))
+            deleted = progress.setdefault("tg_deleted", set())
+            for message_id in dict.fromkeys([r.tg_message_id for r in rows] + [command.message_id]):
+                if message_id not in deleted:
+                    await self.tg.delete(message_id)
+                    deleted.add(message_id)
+            await self.store.forget_messages(link.id, max_id=max_id)
+            self.deleted_messages.discard((link.id, max_id))
+
+        async with self.ingest_lock:
+            self._submit(link, run, reply_to=command.message_id, direction="tg_to_max")
+
     async def command(self, message):
         parts = (message.text or "").split()
         if not parts or not parts[0].startswith("/"):
@@ -619,7 +668,7 @@ class RelayEngine:
         elif command in {"/mute", "/unmute"}:
             await self.store.change_chat(link.id, muted=command == "/mute")
             await self.note(link, "Muted" if command == "/mute" else "Relay включён")
-        elif command == "/history":
+        elif command in {"/history", "/reload"}:
             try:
                 count = int(parts[1]) if len(parts) == 2 else 0
                 if count < 1:
@@ -627,7 +676,9 @@ class RelayEngine:
             except ValueError:
                 await self.note(link, "укажите число сообщений")
                 return True
-            await self.history(link, count)
+            await self.history(link, count, reload=command == "/reload")
+        elif command == "/delete":
+            await self.delete_command(link, message)
         elif command == "/info":
             chat = self.chats.get(link.max_chat_id) or await self.max.get_chat(link.max_chat_id)
             await self.note(
@@ -636,7 +687,10 @@ class RelayEngine:
                 f"Участников: {chat.participants_count}; id: {link.max_chat_id}",
             )
         else:
-            await self.note(link, "Команды: /status, /mute, /unmute, /history N, /info")
+            await self.note(
+                link,
+                "Команды: /status, /mute, /unmute, /history N, /reload N, /delete (ответом), /info",
+            )
         return True
 
     async def close(self, timeout=30):

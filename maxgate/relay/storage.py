@@ -89,8 +89,16 @@ class RelayStorage:
                 .limit(1)
             )
 
-    async def link_messages(self, link_id, max_id, tg_ids, direction):
+    async def link_messages(self, link_id, max_id, tg_ids, direction, *, replace_existing=False):
         async with self.sessions.begin() as session:
+            if replace_existing:
+                await session.execute(
+                    delete(MessageLink).where(
+                        MessageLink.account_id == self.account_id,
+                        MessageLink.chat_link_id == link_id,
+                        MessageLink.max_message_id == max_id,
+                    )
+                )
             existing = set(
                 await session.scalars(
                     select(MessageLink.tg_message_id).where(
@@ -122,10 +130,11 @@ class RelayStorage:
                 )
             )
 
-    async def forget_messages(self, link_id):
+    async def forget_messages(self, link_id, *, max_id=None):
+        query = delete(MessageLink).where(
+            MessageLink.account_id == self.account_id, MessageLink.chat_link_id == link_id
+        )
+        if max_id is not None:
+            query = query.where(MessageLink.max_message_id == max_id)
         async with self.sessions.begin() as session:
-            await session.execute(
-                delete(MessageLink).where(
-                    MessageLink.account_id == self.account_id, MessageLink.chat_link_id == link_id
-                )
-            )
+            await session.execute(query)

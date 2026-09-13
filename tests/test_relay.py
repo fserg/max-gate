@@ -956,3 +956,209 @@ async def test_attachment_transient_failure_still_retries(relay, failure):
     assert message.text == "Sender\nhello"
     assert [a.name for a in message.attachments] == ["retry.bin"]
     assert list(relay.tmp.iterdir()) == []
+
+
+async def test_reload_replaces_links_and_routes_edits_replies_deletes(relay):
+    await relay.accept_max(max_message(1))
+    await relay.accept_max(max_message(2))
+    await relay.queues.drain()
+    link = await relay.store.chat(max_chat_id=10)
+    old = (await relay.store.messages(link.id, max_id=1))[0].tg_message_id
+    relay.max.fetch_history.return_value = [max_message(2), max_message(1)]
+    command = tg_message(500)
+    command.text = "/reload 200"
+    await relay.command(command)
+    await relay.accept_max(max_message(3))
+    await relay.queues.drain()
+    relay.max.fetch_history.assert_awaited_once_with(10, backward=100)
+    rows = await relay.store.messages(link.id, max_id=1)
+    assert len(rows) == 1 and rows[0].tg_message_id != old
+    fresh = rows[0].tg_message_id
+    assert fresh == 102
+    assert [r.tg_message_id for r in await relay.store.messages(link.id, max_id=2)] == [103]
+    assert not await relay.store.messages(link.id, tg_id=old)
+    assert [m.text.startswith("[") for _, m in relay.tg.sent] == [False, False, True, True, False]
+    await relay.max_edit(max_message(1).model_copy(update={"text": "edited"}))
+    await relay.queues.drain()
+    assert relay.tg.edit_parts.call_args.args[0] == [fresh]
+    await relay.accept_tg(tg_message(600), RelayMessage("reply", reply_to=fresh))
+    await relay.queues.drain()
+    assert relay.max.send.call_args.args[1].reply_to == 1
+    await relay.max_delete(NS(chat_id=10, message_ids=[1]))
+    await relay.queues.drain()
+    relay.tg.deletion_note.assert_awaited_once_with(200, fresh)
+    command.text = "/history 2"
+    sent = len(relay.tg.sent)
+    await relay.command(command)
+    await relay.queues.drain()
+    assert len(relay.tg.sent) == sent
+
+
+@pytest.mark.parametrize("text", ["/reload", "/reload 0", "/reload -1", "/reload nope"])
+async def test_reload_requires_positive_count(relay, text):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    command = tg_message()
+    command.text = text
+    await relay.command(command)
+    assert relay.tg.sent[-1][1].text == "укажите число сообщений"
+    relay.max.fetch_history.assert_not_called()
+
+
+async def test_delete_command_removes_all_parts_and_suppresses_echo(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 1, [100, 101], "max_to_tg")
+    relay.tg.delete = AsyncMock()
+
+    async def delete(chat_id, message_id):
+        # Echo can arrive before the MAX request returns.
+        await relay.max_delete(NS(chat_id=chat_id, message_ids=[message_id]))
+        return True
+
+    relay.max.delete = AsyncMock(side_effect=delete)
+    command = tg_message(500)
+    command.text = "/delete"
+    command.reply_to_message = NS(message_id=101)
+    await relay.command(command)
+    await relay.queues.drain()
+    relay.max.delete.assert_awaited_once_with(10, 1)
+    assert [c.args for c in relay.tg.delete.call_args_list] == [(100,), (101,), (500,)]
+    assert not await relay.store.messages(link.id, max_id=1)
+    await relay.max_delete(NS(chat_id=10, message_ids=[1]))
+    await relay.queues.drain()
+    relay.tg.deletion_note.assert_not_awaited()
+    assert not relay.tg.sent
+
+
+async def test_delete_refusal_keeps_copies_and_reports_safe_reason(relay):
+    from pymax.exceptions import ApiError
+
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 1, [100], "max_to_tg")
+    relay.max.delete = AsyncMock(
+        side_effect=ApiError(opcode=66, error="error.message.delete.denied")
+    )
+    relay.tg.delete = AsyncMock()
+    command = tg_message(500)
+    command.text = "/delete"
+    command.reply_to_message = NS(message_id=100)
+    await relay.command(command)
+    await relay.queues.drain()
+    relay.max.delete.assert_awaited_once_with(10, 1)
+    relay.tg.delete.assert_not_awaited()
+    assert len(relay.tg.sent) == 1
+    assert relay.tg.sent[0][1].text.startswith("❌ ")
+    assert "error.message.delete.denied" in relay.tg.sent[0][1].text
+    assert relay.tg.sent[0][1].reply_to == 500
+    assert await relay.store.messages(link.id, max_id=1)
+
+
+@pytest.mark.parametrize("reply", [None, NS(message_id=999)])
+async def test_delete_requires_reply_to_linked_message(relay, reply):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    relay.max.delete = AsyncMock()
+    relay.tg.delete = AsyncMock()
+    command = tg_message(500)
+    command.text = "/delete"
+    command.reply_to_message = reply
+    await relay.command(command)
+    await relay.queues.drain()
+    relay.max.delete.assert_not_awaited()
+    relay.tg.delete.assert_not_awaited()
+    assert len(relay.tg.sent) == 1
+    assert "ответом" in relay.tg.sent[0][1].text
+
+
+async def test_reload_failure_keeps_old_links_and_continues(relay):
+    from pymax.exceptions import ApiError
+
+    await relay.accept_max(max_message(1))
+    await relay.accept_max(max_message(2))
+    await relay.queues.drain()
+    link = await relay.store.chat(max_chat_id=10)
+    old = (await relay.store.messages(link.id, max_id=1))[0].tg_message_id
+    relay.max.fetch_history.return_value = [max_message(1), max_message(2)]
+    relay.tg.failures = [ApiError(opcode=64, error="error.message.invalid")]
+    command = tg_message(500)
+    command.text = "/reload 2"
+    await relay.command(command)
+    await relay.queues.drain()
+    assert [r.tg_message_id for r in await relay.store.messages(link.id, max_id=1)] == [old]
+    assert [r.tg_message_id for r in await relay.store.messages(link.id, max_id=2)] == [103]
+    assert len([m for _, m in relay.tg.sent if m.text.startswith("ℹ️ ")]) == 1
+
+
+@pytest.mark.parametrize("recover", [True, False])
+async def test_delete_cleanup_retries_without_repeating_max_or_echo_note(relay, recover):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 1, [100, 101], "max_to_tg")
+    await relay.store.link_messages(link.id, 2, [102], "max_to_tg")
+    relay.max.delete = AsyncMock(return_value=True)
+    attempts = []
+
+    async def cleanup(message_id):
+        attempts.append(message_id)
+        if message_id == 101 and (not recover or attempts.count(101) == 1):
+            await relay.max_delete(NS(chat_id=10, message_ids=[1]))
+            raise TimeoutError()
+
+    relay.tg.delete = AsyncMock(side_effect=cleanup)
+    command = tg_message(500)
+    command.text = "/delete"
+    command.reply_to_message = NS(message_id=100)
+    await relay.command(command)
+    await relay.queues.drain()
+    relay.max.delete.assert_awaited_once_with(10, 1)
+    assert attempts.count(100) == 1
+    assert attempts.count(101) == (2 if recover else 3)
+    assert attempts.count(500) == (1 if recover else 0)
+    relay.tg.deletion_note.assert_not_awaited()
+    assert bool(await relay.store.messages(link.id, max_id=1)) == (not recover)
+    assert await relay.store.messages(link.id, max_id=2)
+    assert len(relay.tg.sent) == (0 if recover else 1)
+
+
+async def test_delete_does_not_use_message_link_from_another_topic(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    other = await relay.store.ensure_chat(20, "CHAT", "Other", 0)
+    await relay.store.link_messages(other.id, 1, [100], "max_to_tg")
+    relay.max.delete = AsyncMock()
+    command = tg_message(500)
+    command.text = "/delete"
+    command.reply_to_message = NS(message_id=100)
+    await relay.command(command)
+    await relay.queues.drain()
+    relay.max.delete.assert_not_awaited()
+    assert "MessageLink" in relay.tg.sent[0][1].text
+    assert await relay.store.messages(other.id, max_id=1)
+
+
+async def test_delete_retries_loading_complete_multipart_mapping(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 1, [100, 101], "max_to_tg")
+    relay.max.delete = AsyncMock(return_value=True)
+    relay.tg.delete = AsyncMock()
+    messages = relay.store.messages
+    failed = False
+
+    async def load(link_id, **kwargs):
+        nonlocal failed
+        if kwargs.get("max_id") == 1 and not failed:
+            failed = True
+            raise TimeoutError()
+        return await messages(link_id, **kwargs)
+
+    relay.store.messages = load
+    command = tg_message(500)
+    command.text = "/delete"
+    command.reply_to_message = NS(message_id=101)
+    await relay.command(command)
+    await relay.queues.drain()
+    relay.max.delete.assert_awaited_once_with(10, 1)
+    assert [c.args for c in relay.tg.delete.call_args_list] == [(100,), (101,), (500,)]

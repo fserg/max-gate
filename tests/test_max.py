@@ -152,3 +152,12 @@ async def test_voice_api_refusal_does_not_retry_as_file(tmp_path):
     with pytest.raises(ApiError):
         await adapter.send(10, RelayMessage(attachments=[Attachment("voice", path)]))
     client.send_message.assert_awaited_once()
+
+
+async def test_delete_for_all_participants():
+    client = SimpleNamespace(
+        on_start=lambda: lambda fn: fn, delete_message=AsyncMock(return_value=True)
+    )
+    adapter = MaxClient(client)
+    assert await adapter.delete(10, 20)
+    client.delete_message.assert_awaited_once_with(10, [20], for_me=False)

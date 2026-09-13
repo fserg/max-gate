@@ -245,5 +245,8 @@ class MaxClient:
     async def add_reaction(self, chat_id, message_id, emoji):
         return await self.client.add_reaction(chat_id, message_id, emoji)
 
+    async def delete(self, chat_id, message_id):
+        return await self.client.delete_message(chat_id, [message_id], for_me=False)
+
     async def remove_reaction(self, chat_id, message_id):
         return await self.client.remove_reaction(chat_id, message_id)

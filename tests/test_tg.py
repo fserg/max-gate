@@ -230,3 +230,20 @@ async def test_reactions_owner_inbox_filter_and_polling_subscription(storage):
     assert (
         "message_reaction" in adapter.dispatcher.start_polling.call_args.kwargs["allowed_updates"]
     )
+
+
+async def test_delete_copy_and_ignore_only_already_missing_message(storage):
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import DeleteMessage
+
+    _, sessions, _ = storage
+    request = DeleteMessage(chat_id=10, message_id=100)
+    missing = TelegramBadRequest(method=request, message="Bad Request: message to delete not found")
+    forbidden = TelegramBadRequest(method=request, message="Bad Request: message can't be deleted")
+    fake = SimpleNamespace(delete_message=AsyncMock(side_effect=[True, missing, forbidden]))
+    adapter = TgBot("", SimpleNamespace(inbox_chat_id=10), sessions, bot=fake)
+    await adapter.delete(100)
+    fake.delete_message.assert_awaited_with(chat_id=10, message_id=100)
+    await adapter.delete(100)
+    with pytest.raises(TelegramBadRequest):
+        await adapter.delete(100)

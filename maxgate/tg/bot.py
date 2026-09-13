@@ -173,6 +173,13 @@ class TgBot:
             else None,
         )
 
+    async def delete(self, message_id):
+        try:
+            await self.bot.delete_message(chat_id=self.account.inbox_chat_id, message_id=message_id)
+        except TelegramBadRequest as exc:
+            if "message to delete not found" not in exc.message.lower():
+                raise
+
     async def deletion_note(self, topic_id, message_id):
         kwargs = dict(
             chat_id=self.account.inbox_chat_id,
