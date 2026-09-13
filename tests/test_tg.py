@@ -174,3 +174,28 @@ async def test_edit_growing_caption_keeps_entire_text(storage):
     assert ids == [1, 2, 3]
     assert bot.edit_message_caption.call_args.kwargs["caption"] == ""
     assert "".join(call.kwargs["text"] for call in bot.send_message.call_args_list) == "a" * 5000
+
+
+async def test_start_cannot_rebind_existing_inbox(storage):
+    from maxgate.db.models import Account
+    from maxgate.relay.storage import RelayStorage
+
+    _, sessions, _ = storage
+    async with sessions.begin() as session:
+        account = await session.get(Account, 1)
+        account.inbox_mode = "supergroup"
+        account.inbox_chat_id = 10
+    store = RelayStorage(1, sessions)
+    link = await store.ensure_chat(50, "CHAT", "Title", 0)
+    await store.change_chat(link.id, topic_id=2)
+    await store.link_messages(link.id, 70, [1], "max_to_tg")
+    fake = SimpleNamespace(send_message=AsyncMock(), get_me=AsyncMock())
+    adapter = TgBot("", account, sessions, bot=fake)
+    await adapter._start(
+        message(text="/start", chat={"id": 999, "type": "supergroup", "is_forum": True})
+    )
+    fake.get_me.assert_not_called()
+    assert "Operator" in fake.send_message.call_args.kwargs["text"]
+    assert account.inbox_chat_id == 10
+    assert (await store.chat(link_id=link.id)).topic_id == 2
+    assert len(await store.messages(link.id)) == 1

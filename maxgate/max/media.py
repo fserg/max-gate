@@ -7,7 +7,9 @@ import aiohttp
 
 
 class MediaTooLarge(ValueError):
-    pass
+    def __init__(self, size):
+        self.size = size
+        super().__init__(f"MAX media exceeds Telegram upload limit: at least {size} bytes")
 
 
 def oneme_ssl_context() -> ssl.SSLContext:
@@ -39,13 +41,13 @@ async def download(url: str, dest: Path, limit: int = 50 * 1024 * 1024) -> Path:
                         continue
                     response.raise_for_status()
                     if response.content_length and response.content_length > limit:
-                        raise MediaTooLarge("MAX media exceeds Telegram upload limit")
+                        raise MediaTooLarge(response.content_length)
                     size = 0
                     with dest.open("wb") as output:
                         async for chunk in response.content.iter_chunked(64 * 1024):
                             size += len(chunk)
                             if size > limit:
-                                raise MediaTooLarge("MAX media exceeds Telegram upload limit")
+                                raise MediaTooLarge(size)
                             output.write(chunk)
                     return dest
             raise ValueError("Too many media redirects")

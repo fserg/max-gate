@@ -139,12 +139,13 @@ def login_wizard(client, account, events):
             "Отправить пароль" if kind == "password" else "Отправить код", disabled=remaining == 0
         )
     if send:
-        if credential.strip():
+        credential = credential.strip() if kind == "code" else credential
+        if credential:
             invoke(
                 client,
                 "POST",
                 path + f"/login/{kind}",
-                {kind: credential.strip()},
+                {kind: credential},
                 clear_keys=(f"credential_value_{account_id}_{kind}",),
             )
         else:

@@ -117,3 +117,86 @@ async def test_file_ready_timeout_is_distinct_and_waiter_removed(monkeypatch, tm
     with pytest.raises(UploadError, match="FILE_READY"):
         await service.upload_file(File(path=path))
     assert original.file_upload_waiters == {}
+
+
+@pytest.mark.parametrize("kind", ["photo", "video", "voice"])
+@pytest.mark.parametrize("route", ["success", "http", "downgrade", "external"])
+async def test_all_uploads_validate_every_hop(monkeypatch, kind, route):
+    from maxgate.max.uploads import GateUploadService
+
+    initial = ("http" if route == "http" else "https") + "://fu2.oneme.ru/u?photoIds=42"
+    app = NS(
+        dispatcher=NS(on_internal=lambda _: lambda fn: fn),
+        config=NS(
+            proxy=None,
+            upload_timeout=10,
+            app_version="test",
+            device=NS(user_agent=NS(os_version="os", device_name="device", screen="screen")),
+        ),
+        invoke=AsyncMock(
+            return_value=NS(
+                payload={
+                    "url": initial,
+                    "info": [{"videoId": 42, "url": initial, "token": "fake"}],
+                }
+            )
+        ),
+    )
+    service = GateUploadService(UploadService(app))
+    calls = []
+    bodies = []
+
+    class Response:
+        def __init__(self, status=200, headers=None):
+            self.status, self.headers = status, headers or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def json(self):
+            return {"photos": {"42": {"token": "photo-token"}}}
+
+    class Http(Response):
+        def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            assert kwargs["allow_redirects"] is False
+            bodies.append(kwargs["data"])
+            if len(calls) == 1 and route in {"downgrade", "external"}:
+                scheme = "http" if route == "downgrade" else "https"
+                return Response(307, {"Location": f"{scheme}://example.org/u"})
+            if kind == "video":
+                service.video_upload_waiters[42].set_result(None)
+            return Response()
+
+    monkeypatch.setattr("maxgate.max.uploads.aiohttp.ClientSession", lambda **_: Http())
+
+    async def chunks(_):
+        yield b"fake-media"
+
+    media = NS(
+        name="media",
+        size=AsyncMock(return_value=10),
+        iter_chunks=chunks,
+        validate_photo=lambda: ("png", "image/png"),
+        read=AsyncMock(return_value=b"photo"),
+        get_duration=AsyncMock(return_value=100),
+    )
+    operation = getattr(service, "upload_" + kind)
+    if route in {"http", "downgrade"}:
+        with pytest.raises(UploadError, match="HTTPS"):
+            await operation(media)
+        assert len(calls) == (0 if route == "http" else 1)
+    else:
+        result = await operation(media)
+        assert result is not None
+        assert isinstance(calls[0][1]["ssl"], ssl.SSLContext)
+        assert calls[0][1]["ssl"].check_hostname
+        assert calls[0][1]["ssl"].verify_mode == ssl.CERT_REQUIRED
+        if route == "external":
+            assert calls[1][1]["ssl"] is True
+            assert bodies[0] is not bodies[1]
+    assert not service.video_upload_waiters
+    assert not service.voice_upload_waiters

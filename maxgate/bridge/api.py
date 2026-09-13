@@ -5,6 +5,7 @@ from aiogram import Bot
 from aiohttp import web
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from maxgate.db.models import Account, AccountEvent
 from maxgate.relay.storage import RelayStorage
@@ -129,6 +130,7 @@ class InternalApi:
         finally:
             await bot.session.close()
         account = Account(
+            tg_bot_id=me.id,
             name=data.name,
             phone=data.phone,
             tg_bot_token_enc=self.supervisor.crypto.encrypt(data.tg_bot_token.get_secret_value()),
@@ -136,9 +138,18 @@ class InternalApi:
             inbox_mode=data.inbox_mode,
             relay_channels=data.relay_channels,
         )
-        async with self.supervisor.sessions.begin() as session:
-            session.add(account)
-            await session.flush()
+        try:
+            async with self.supervisor.sessions.begin() as session:
+                session.add(account)
+                await session.flush()
+        except IntegrityError:
+            async with self.supervisor.sessions() as session:
+                exists = await session.scalar(select(Account.id).where(Account.tg_bot_id == me.id))
+            if exists is not None:
+                raise web.HTTPConflict(
+                    text="Telegram bot is already assigned to an Account"
+                ) from None
+            raise
         await self.supervisor.storage.event(account.id, "Account created")
         return web.json_response(account_json(account), status=201)
 

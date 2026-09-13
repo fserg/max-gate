@@ -69,7 +69,8 @@ async def test_api_bearer_validation_crud_and_account_isolation(storage, tmp_pat
     _, sessions, crypto = storage
     supervisor = Supervisor(sessions, crypto, NS(data_dir=tmp_path))
     bot = NS(
-        get_me=AsyncMock(return_value=NS(has_topics_enabled=True)), session=NS(close=AsyncMock())
+        get_me=AsyncMock(return_value=NS(id=555, has_topics_enabled=True)),
+        session=NS(close=AsyncMock()),
     )
     api = InternalApi(supervisor, "fake-internal-token", bot_factory=lambda _: bot)
     request = make_mocked_request("GET", "/accounts")
@@ -245,3 +246,80 @@ async def test_pause_logout_and_credentials(storage, tmp_path):
     with pytest.raises(ValueError):
         await supervisor.action(1, "resume")
     await supervisor.close()
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+async def test_duplicate_bot_accounts_conflict(storage, tmp_path, concurrent):
+    _, sessions, crypto = storage
+    supervisor = Supervisor(sessions, crypto, NS(data_dir=tmp_path))
+    bot = NS(
+        get_me=AsyncMock(return_value=NS(id=777, has_topics_enabled=True)),
+        session=NS(close=AsyncMock()),
+    )
+    api = InternalApi(supervisor, "fake", bot_factory=lambda _: bot)
+    requests = [
+        NS(
+            json=AsyncMock(
+                return_value=dict(
+                    name=f"account {n}",
+                    phone=f"+123456789{n}",
+                    owner_tg_user_id=10 + n,
+                    tg_bot_token="fictional-token",
+                )
+            )
+        )
+        for n in (1, 2)
+    ]
+
+    async def create(request):
+        try:
+            return (await api.create(request)).status
+        except web.HTTPConflict as exc:
+            assert "already assigned" in exc.text
+            return exc.status
+
+    statuses = (
+        await asyncio.gather(*(create(r) for r in requests))
+        if concurrent
+        else [await create(r) for r in requests]
+    )
+    assert sorted(statuses) == [201, 409]
+    assert sum(a.tg_bot_id == 777 for a in await supervisor.storage.all()) == 1
+    await supervisor.close()
+
+
+async def test_inbox_patch_clears_topics_and_message_links(storage, tmp_path):
+    _, sessions, crypto = storage
+    supervisor = Supervisor(sessions, crypto, NS(data_dir=tmp_path))
+    await supervisor.storage.update(1, inbox_chat_id=100)
+    store = RelayStorage(1, sessions)
+    link = await store.ensure_chat(10, "CHAT", "Title", 0)
+    await store.change_chat(link.id, topic_id=200, renamed_by_owner=True)
+    await store.link_messages(link.id, 1, [100], "max_to_tg")
+    await supervisor.patch(1, {"inbox_mode": "supergroup"})
+    assert (await supervisor.storage.get(1)).inbox_chat_id is None
+    current = await store.chat(link_id=link.id)
+    assert current.topic_id is None and not current.renamed_by_owner
+    assert await store.messages(link.id) == []
+    assert await store.chat(topic_id=200) is None
+    await supervisor.close()
+
+
+@pytest.mark.parametrize(
+    "kind,value,expected",
+    [
+        ("password", "  password  ", "  password  "),
+        ("password", "  ", "  "),
+        ("code", " 123456 ", "123456"),
+    ],
+)
+async def test_runner_credentials_are_exact(storage, tmp_path, kind, value, expected):
+    _, sessions, crypto = storage
+    runner = AccountRunner(
+        await AccountStorage(sessions).get(1), sessions, crypto, NS(data_dir=tmp_path)
+    )
+    runner.max = RunnerMax()
+    provider = runner.max.password if kind == "password" else runner.max.sms
+    provider.requested.set()
+    await runner.provide(kind, value)
+    assert provider.queue.get_nowait() == expected

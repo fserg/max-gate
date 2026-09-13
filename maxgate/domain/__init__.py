@@ -22,6 +22,8 @@ class Attachment:
     duration: int | None = None  # milliseconds
     width: int | None = None
     height: int | None = None
+    source_chat_id: int | None = None
+    source_message_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -45,10 +47,6 @@ class RelayMessage:
 
 def utf16_length(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
-
-
-def escape_max(text: str) -> str:
-    return "".join("\\" + char if char in "\\*_~`[]#>" else char for char in text)
 
 
 ELEMENT_TYPES = {

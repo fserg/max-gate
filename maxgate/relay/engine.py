@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from maxgate.domain import RelayMessage, render, utf16_length
+from maxgate.max.media import MediaTooLarge
 from maxgate.max.messages import from_max
 from maxgate.relay.errors import reason, thread_missing
 from maxgate.relay.queue import ChatQueues, Job
@@ -41,6 +42,7 @@ class RelayEngine:
             self.inbox_ready.set()
         self.ingest_lock = asyncio.Lock()
         self.albums = {}
+        self.album_captions = {}
         self.chats = {}
         self.last_event_time = None
         self.attachment_signatures = {}
@@ -116,7 +118,7 @@ class RelayEngine:
         else:
             await self._send(link, RelayMessage(text=text, reply_to=reply_to), {})
 
-    def _submit(self, link, run, *, reply_to=None, direction="max_to_tg"):
+    def _job(self, link, run, *, reply_to=None, direction="max_to_tg"):
         async def failed(exc):
             safe = reason(exc)
             await self.event(f"Relay failed: {safe}", "ERROR")
@@ -127,7 +129,10 @@ class RelayEngine:
             except Exception as note_error:
                 await self.event(f"Note failed: {reason(note_error)}", "ERROR")
 
-        self.queues.submit(link.id, Job(run, failed))
+        return Job(run, failed, direction)
+
+    def _submit(self, link, run, **kwargs):
+        self.queues.submit(link.id, self._job(link, run, **kwargs))
 
     async def accept_max(self, message):
         if self.closed or message.chat_id is None:
@@ -177,9 +182,23 @@ class RelayEngine:
                     continue
                 filename = Path(attachment.name or f"attachment-{n}").name
                 dest = Path(temp) / f"{n}-{filename}"
-                await self.max.download_attachment(
-                    link.max_chat_id, message.id, attachment.source, dest
-                )
+                try:
+                    await self.max.download_attachment(
+                        attachment.source_chat_id or link.max_chat_id,
+                        attachment.source_message_id or message.id,
+                        attachment.source,
+                        dest,
+                    )
+                except MediaTooLarge as exc:
+                    relay = replace(
+                        relay,
+                        text=relay.text
+                        + (
+                            f"\nℹ️ Файл {attachment.name or 'без имени'}: "
+                            f"не менее {exc.size} байт — больше 50 МБ"
+                        ),
+                    )
+                    continue
                 attachments.append(replace(attachment, source=dest))
             relay = replace(relay, attachments=attachments)
             sent = await self._send(link, relay, progress)
@@ -270,6 +289,11 @@ class RelayEngine:
             link.id, progress["result"].id, [m.message_id for m, _ in items], "tg_to_max"
         )
 
+        if len(items) > 1:
+            self.album_captions[(link.id, progress["result"].id)] = {
+                m.message_id: relay.text for m, relay in items
+            }
+
         logging.getLogger("maxgate").info(
             "Relay tg_to_max account=%s chat=%s max_id=%s tg_ids=%s",
             self.account.id,
@@ -308,9 +332,17 @@ class RelayEngine:
                         )
                     messages = state["messages"]
                     for message in messages[:100]:
-                        await self.max_to_tg(
-                            link, message, state.setdefault(message.id, {}), timestamp=True
-                        )
+                        progress = state.setdefault(message.id, {})
+                        if progress.get("done"):
+                            continue
+
+                        async def relay_one(message=message, progress=progress):
+                            await self.max_to_tg(link, message, progress, timestamp=True)
+
+                        # Execute inline to keep the entire history ahead of live events,
+                        # but give each message its own retries and final failure Note.
+                        await self.queues.execute(self._job(link, relay_one))
+                        progress["done"] = True
                     if len(messages) > 100 and not state.get("noted"):
                         await self.note(
                             link, f"ℹ️ пропущено ещё {len(messages) - 100} (как минимум)"
@@ -339,110 +371,131 @@ class RelayEngine:
         self._submit(link, run)
 
     async def max_edit(self, message):
-        if message.chat_id is None:
+        if self.closed:
             return
-        link = await self.store.chat(max_chat_id=message.chat_id)
-        if link is None:
-            return
-
-        progress = []
-        noted = False
-
-        async def run():
-            nonlocal noted
-            links = [
-                row
-                for row in await self.store.messages(link.id, max_id=message.id)
-                if row.direction == "max_to_tg"
-            ]
-            if not links:
+        async with self.ingest_lock:
+            if message.chat_id is None:
                 return
-            sender = await self.max.user_name(message.sender) if message.sender else "?"
-            relay = render(
-                from_max(message, sender=sender),
-                link.max_chat_type,
-                owner=message.sender == self.max.me_id,
-            )
-            signature = self._signature(message)
-            if not noted and signature != self.attachment_signatures.get(message.id, ()):
-                await self.note(link, "ℹ️ сообщение изменено, вложение обновить нельзя")
-                noted = True
-            ids = await self.tg.edit_parts(
-                [row.tg_message_id for row in links],
-                relay,
-                topic_id=link.topic_id,
-                progress=progress,
-            )
-            if ids:
-                await self.store.link_messages(link.id, message.id, ids, "max_to_tg")
-            self.attachment_signatures[message.id] = signature
-            logging.getLogger("maxgate").info(
-                "Relay max_to_tg edit account=%s chat=%s max_id=%s tg_ids=%s",
-                self.account.id,
-                link.max_chat_id,
-                message.id,
-                [row.tg_message_id for row in links],
-            )
+            link = await self.store.chat(max_chat_id=message.chat_id)
+            if link is None:
+                return
 
-        self._submit(link, run)
+            progress = []
+            noted = False
 
-    async def max_delete(self, event):
-        link = await self.store.chat(max_chat_id=event.chat_id)
-        if link is None:
-            return
-
-        async def run():
-            for message_id in event.message_ids:
-                links = await self.store.messages(link.id, max_id=message_id)
-                for row in links:
-                    if row.direction == "max_to_tg":
-                        await self.tg.edit_parts(
-                            [row.tg_message_id], RelayMessage("🗑 удалено"), topic_id=link.topic_id
-                        )
-                        logging.getLogger("maxgate").info(
-                            "Relay max_to_tg delete account=%s chat=%s max_id=%s tg_id=%s",
-                            self.account.id,
-                            link.max_chat_id,
-                            message_id,
-                            row.tg_message_id,
-                        )
-
-        self._submit(link, run)
-
-    async def tg_edit(self, message, relay):
-        link = await self.store.chat(topic_id=message.message_thread_id)
-        if link is None:
-            return
-
-        async def run():
-            links = await self.store.messages(link.id, tg_id=message.message_id)
-            if links and links[0].direction == "tg_to_max":
-                await self.max.edit(link.max_chat_id, links[0].max_message_id, relay.text)
+            async def run():
+                nonlocal noted
+                links = [
+                    row
+                    for row in await self.store.messages(link.id, max_id=message.id)
+                    if row.direction == "max_to_tg"
+                ]
+                if not links:
+                    return
+                current = await self.store.chat(link_id=link.id)
+                sender = await self.max.user_name(message.sender) if message.sender else "?"
+                relay = render(
+                    from_max(message, sender=sender),
+                    link.max_chat_type,
+                    owner=message.sender == self.max.me_id,
+                )
+                signature = self._signature(message)
+                if not noted and signature != self.attachment_signatures.get(message.id, ()):
+                    await self.note(link, "ℹ️ сообщение изменено, вложение обновить нельзя")
+                    noted = True
+                ids = await self.tg.edit_parts(
+                    [row.tg_message_id for row in links],
+                    relay,
+                    topic_id=current.topic_id,
+                    progress=progress,
+                )
+                if ids:
+                    await self.store.link_messages(link.id, message.id, ids, "max_to_tg")
+                self.attachment_signatures[message.id] = signature
                 logging.getLogger("maxgate").info(
-                    "Relay tg_to_max edit account=%s chat=%s max_id=%s tg_id=%s",
+                    "Relay max_to_tg edit account=%s chat=%s max_id=%s tg_ids=%s",
                     self.account.id,
                     link.max_chat_id,
-                    links[0].max_message_id,
-                    message.message_id,
+                    message.id,
+                    [row.tg_message_id for row in links],
                 )
 
-        self._submit(link, run, reply_to=message.message_id, direction="tg_to_max")
+            self._submit(link, run)
+
+    async def max_delete(self, event):
+        if self.closed:
+            return
+        async with self.ingest_lock:
+            link = await self.store.chat(max_chat_id=event.chat_id)
+            if link is None:
+                return
+
+            async def run():
+                current = await self.store.chat(link_id=link.id)
+                for message_id in event.message_ids:
+                    links = await self.store.messages(link.id, max_id=message_id)
+                    for row in links:
+                        if row.direction == "max_to_tg":
+                            await self.tg.edit_parts(
+                                [row.tg_message_id],
+                                RelayMessage("🗑 удалено"),
+                                topic_id=current.topic_id,
+                            )
+                            logging.getLogger("maxgate").info(
+                                "Relay max_to_tg delete account=%s chat=%s max_id=%s tg_id=%s",
+                                self.account.id,
+                                link.max_chat_id,
+                                message_id,
+                                row.tg_message_id,
+                            )
+
+            self._submit(link, run)
+
+    async def tg_edit(self, message, relay):
+        if self.closed:
+            return
+        async with self.ingest_lock:
+            link = await self.store.chat(topic_id=message.message_thread_id)
+            if link is None:
+                return
+
+            async def run():
+                links = await self.store.messages(link.id, tg_id=message.message_id)
+                if links and links[0].direction == "tg_to_max":
+                    captions = self.album_captions.get((link.id, links[0].max_message_id))
+                    text = relay.text
+                    if captions is not None:
+                        captions[message.message_id] = relay.text
+                        text = "\n".join(captions[key] for key in sorted(captions) if captions[key])
+                    await self.max.edit(link.max_chat_id, links[0].max_message_id, text)
+                    logging.getLogger("maxgate").info(
+                        "Relay tg_to_max edit account=%s chat=%s max_id=%s tg_id=%s",
+                        self.account.id,
+                        link.max_chat_id,
+                        links[0].max_message_id,
+                        message.message_id,
+                    )
+
+            self._submit(link, run, reply_to=message.message_id, direction="tg_to_max")
 
     async def chat_update(self, chat):
-        self.chats[chat.id] = chat
-        link = await self.store.chat(max_chat_id=chat.id)
-        if link is None or not chat.title:
+        if self.closed:
             return
-
-        async def run():
-            current = await self.store.chat(link_id=link.id)
-            if current.max_title == chat.title:
+        async with self.ingest_lock:
+            self.chats[chat.id] = chat
+            link = await self.store.chat(max_chat_id=chat.id)
+            if link is None or not chat.title:
                 return
-            if current.topic_id is not None and not current.renamed_by_owner:
-                await self.tg.edit_topic(current.topic_id, chat.title)
-            await self.store.change_chat(link.id, max_title=chat.title)
 
-        self._submit(link, run)
+            async def run():
+                current = await self.store.chat(link_id=link.id)
+                if current.max_title == chat.title:
+                    return
+                if current.topic_id is not None and not current.renamed_by_owner:
+                    await self.tg.edit_topic(current.topic_id, chat.title)
+                await self.store.change_chat(link.id, max_title=chat.title)
+
+            self._submit(link, run)
 
     async def topic_edited(self, topic_id, title):
         link = await self.store.chat(topic_id=topic_id)
@@ -490,5 +543,7 @@ class RelayEngine:
 
     async def close(self, timeout=30):
         self.closed = True
-        await self.queues.close(timeout)
+        lost = await self.queues.close(timeout)
         self.albums.clear()
+        self.album_captions.clear()
+        return lost

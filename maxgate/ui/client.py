@@ -45,6 +45,7 @@ class InternalApiClient:
             messages = {
                 400: "Проверьте поля и состояние Account.",
                 401: "InternalApi отклонил токен доступа.",
+                409: "Этот Telegram-бот уже назначен другому Account.",
                 404: "Account или ChatLink больше не существует.",
                 502: "Gate не смог выполнить операцию. Проверьте журнал Account.",
             }

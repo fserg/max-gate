@@ -6,7 +6,6 @@ from maxgate.domain import (
     Entity,
     Note,
     RelayMessage,
-    escape_max,
     max_entities,
     render,
     split_text,
@@ -14,10 +13,6 @@ from maxgate.domain import (
     voice_kind,
 )
 from maxgate.max.messages import from_max
-
-
-def test_escape():
-    assert escape_max("a\\*_~`[]#> 😀") == "a\\\\\\*\\_\\~\\`\\[\\]\\#\\> 😀"
 
 
 def test_utf16_elements_and_missing_offsets():
@@ -116,3 +111,30 @@ def test_fallbacks():
     assert len(relay.notes) == 5
     assert [a.kind for a in relay.attachments] == ["document", "location"]
     assert "Question?\n• Yes" in relay.notes[0].text
+
+
+def test_forward_real_message_entities_and_nested_source():
+    from pymax import Message
+
+    message = Message(
+        id=3,
+        time=3,
+        type="USER",
+        link={
+            "type": "FORWARD",
+            "chatId": 50,
+            "chatName": "source",
+            "message": {
+                "id": 2,
+                "time": 2,
+                "type": "USER",
+                "text": "inside",
+                "elements": [{"type": "STRONG", "from_": 0, "length": 6}],
+            },
+        },
+    )
+    relay = render(from_max(message), "DIALOG")
+    assert relay.text == "↪️ Переслано от source\ninside"
+    assert relay.entities[0].type == "bold"
+    assert relay.entities[0].offset == utf16_length("↪️ Переслано от source\n")
+    assert relay.entities[0].length == 6

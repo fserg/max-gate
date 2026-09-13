@@ -43,6 +43,12 @@ class TgBot:
         return await handler(event, data)
 
     async def _start(self, message: Message):
+        if self.account.inbox_chat_id is not None and self.account.inbox_chat_id != message.chat.id:
+            await self.bot.send_message(
+                chat_id=message.chat.id,
+                text="Inbox уже подключён. Перепривязку выполняет Operator через UI: настройки Account.",
+            )
+            return
         if self.account.inbox_mode == "private":
             if message.chat.type != "private":
                 return

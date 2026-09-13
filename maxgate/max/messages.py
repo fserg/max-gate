@@ -4,6 +4,28 @@ from maxgate.domain import Attachment, Note, RelayMessage, max_entities, value
 
 
 def from_max(message, *, sender: str | None = None, forwarded_from: str | None = None):
+    link = message.link
+    if link and value(link, "type") == "FORWARD" and value(link, "message"):
+        from dataclasses import replace
+
+        original = value(link, "message")
+        relay = from_max(
+            original,
+            sender=sender,
+            forwarded_from=forwarded_from or value(link, "chat_name") or "неизвестного отправителя",
+        )
+        return replace(
+            relay,
+            reply_to=None,
+            attachments=[
+                replace(
+                    a,
+                    source_chat_id=a.source_chat_id or value(link, "chat_id"),
+                    source_message_id=a.source_message_id or original.id,
+                )
+                for a in relay.attachments
+            ],
+        )
     attachments, notes = [], []
     text = message.text or ""
     for item in message.attaches or []:

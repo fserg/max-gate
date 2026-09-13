@@ -16,6 +16,7 @@ async def storage(tmp_path):
             session.add(
                 Account(
                     id=n,
+                    tg_bot_id=n,
                     name=f"Account {n}",
                     phone=f"+100{n}",
                     owner_tg_user_id=n,

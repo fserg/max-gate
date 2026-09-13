@@ -36,3 +36,27 @@ def test_log_exception_is_sanitized_without_raw_traceback():
     text = stream.getvalue()
     assert "service denied" in text
     assert "hunter2" not in text and "private" not in text and "Traceback" not in text
+
+
+def test_real_decoder_does_not_log_hex_payload():
+    import pytest
+    from pymax.protocol.tcp.payload import MsgpackPayloadCodec
+
+    from maxgate.diagnostics import route_pymax_logging
+
+    secret = "fictional-private-value"
+    register_secret(secret)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(SafeFormatter("%(message)s"))
+    logger = logging.getLogger("maxgate")
+    logger.addHandler(handler)
+    route_pymax_logging()
+    try:
+        with pytest.raises(Exception):
+            MsgpackPayloadCodec().decode(b"\xc1" + secret.encode())
+    finally:
+        logger.removeHandler(handler)
+    assert "msgpack decode failed" in stream.getvalue()
+    assert secret not in stream.getvalue()
+    assert secret.encode().hex() not in stream.getvalue()

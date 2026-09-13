@@ -24,7 +24,7 @@ def settings(tmp_path):
         secret_key=Crypto.generate_key(),
         data_dir=tmp_path,
         TEL="+1000",
-        TG_BOT_TOKEN="fake-token",
+        TG_BOT_TOKEN="123:fake-token",
     )
 
 
@@ -76,10 +76,65 @@ async def test_seed_import_is_atomic_and_idempotent(settings):
     assert await seed_account(settings, 123, source) == account_id
     assert (await store.load_session()).token == "rotated-session"
     async with sessions() as session:
-        assert len((await session.scalars(select(Account))).all()) == 1
+        accounts = (await session.scalars(select(Account))).all()
+        assert len(accounts) == 1
+        assert accounts[0].tg_bot_id == 123
         row = await session.get(MaxSession, account_id)
         assert row.user_agent_json == agent.model_dump(mode="json")
         assert row.token_enc != "rotated-session"
         with pytest.raises(InvalidToken):
             Crypto(Crypto.generate_key()).decrypt(row.token_enc)
     await engine.dispose()
+
+
+def test_existing_accounts_migration_preserves_relations(settings):
+    config = migration_config(settings)
+    command.upgrade(config, "0001")
+    crypto = Crypto(settings.secret_key)
+    path = settings.data_dir / "maxgate.db"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO accounts VALUES (1,'dev','+1000',?,1,'private',10,0,'paused',NULL,?,?)",
+            (crypto.encrypt("123:fake-token"), "2026-01-01", "2026-01-01"),
+        )
+        db.execute(
+            "INSERT INTO max_sessions VALUES (1,?,'device','+1000','','{}','{}',?)",
+            (crypto.encrypt("saved-session"), "2026-01-01"),
+        )
+        db.execute(
+            "INSERT INTO chat_links VALUES (1,1,10,'CHAT','title',20,0,0,1000,?)", ("2026-01-01",)
+        )
+        db.execute(
+            "INSERT INTO message_links VALUES (1,1,1,30,40,0,'max_to_tg',?)", ("2026-01-01",)
+        )
+    command.upgrade(config, "head")
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT tg_bot_id FROM accounts").fetchone() == (123,)
+        for table in ("max_sessions", "chat_links", "message_links"):
+            assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (1,)
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE accounts SET state='invalid'")
+    command.downgrade(config, "0001")
+    command.upgrade(config, "head")
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT count(*) FROM max_sessions").fetchone() == (1,)
+
+
+def test_duplicate_legacy_bots_abort_migration_without_changes(settings):
+    config = migration_config(settings)
+    command.upgrade(config, "0001")
+    crypto = Crypto(settings.secret_key)
+    path = settings.data_dir / "maxgate.db"
+    with sqlite3.connect(path) as db:
+        for n in (1, 2):
+            db.execute(
+                "INSERT INTO accounts VALUES (?,'dev','+1000',?,1,'private',10,0,'paused',NULL,?,?)",
+                (n, crypto.encrypt("123:fake-token"), "2026-01-01", "2026-01-01"),
+            )
+    with pytest.raises(ValueError, match="Duplicate Telegram bots"):
+        command.upgrade(config, "head")
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0001",)
+        assert "tg_bot_id" not in [r[1] for r in db.execute("PRAGMA table_info(accounts)")]
+        assert db.execute("SELECT count(*) FROM accounts").fetchone() == (2,)

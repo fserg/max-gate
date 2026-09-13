@@ -5,6 +5,7 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from aiogram.utils.token import extract_bot_id
 from alembic import command
 from alembic.config import Config
 from pymax.session import SessionInfo
@@ -20,6 +21,7 @@ from maxgate.max.store import SessionStore
 
 def migration_config(settings: Settings) -> Config:
     config = Config()
+    config.attributes["secret_key"] = settings.secret_key
     config.set_main_option("script_location", str(Path(__file__).parent / "db" / "migrations"))
     config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
     return config
@@ -56,6 +58,7 @@ async def seed_account(settings: Settings, owner: int, source: Path) -> int:
     if not settings.tel or not settings.tg_bot_token:
         raise ValueError("TEL and TG_BOT_TOKEN are required")
     phone = settings.tel.get_secret_value()
+    bot_id = extract_bot_id(settings.tg_bot_token.get_secret_value())
     crypto = Crypto(settings.secret_key)
     engine, sessions = create_storage(settings.database_url)
     try:
@@ -71,6 +74,7 @@ async def seed_account(settings: Settings, owner: int, source: Path) -> int:
             if account is None:
                 account = Account(
                     name="dev",
+                    tg_bot_id=bot_id,
                     phone=phone,
                     owner_tg_user_id=owner,
                     tg_bot_token_enc=crypto.encrypt(settings.tg_bot_token.get_secret_value()),
@@ -78,6 +82,7 @@ async def seed_account(settings: Settings, owner: int, source: Path) -> int:
                 session.add(account)
                 await session.flush()
             else:
+                account.tg_bot_id = bot_id
                 account.owner_tg_user_id = owner
                 account.tg_bot_token_enc = crypto.encrypt(settings.tg_bot_token.get_secret_value())
             # Не заменяем обновлённый сервером токен устаревшим токеном из spike.

@@ -31,7 +31,7 @@ import sys
 import time
 from importlib import resources
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from pymax import Client, File, Message, Photo
@@ -166,24 +166,34 @@ class Spike:
         return name
 
     async def download(self, url: str, dest: Path) -> None:
-        ssl_arg: ssl.SSLContext | None = self.ssl_oneme if is_oneme(url) else None
-        async with aiohttp.ClientSession() as http, http.get(url, ssl=ssl_arg) as resp:
-            data = await resp.read()
-            dest.write_bytes(data)
-            head = data[:12]
-            kind = (
-                "OGG" if head.startswith(b"OggS")
-                else "MP4/M4A" if head[4:8] == b"ftyp"
-                else "MP3" if head.startswith(b"ID3") or head[:2] in (b"\xff\xfb", b"\xff\xf3")
-                else "JPEG" if head.startswith(b"\xff\xd8")
-                else "PNG" if head.startswith(b"\x89PNG")
-                else "WEBP" if head[8:12] == b"WEBP"
-                else "?"
-            )
-            log.info(
-                "  скачано %s: %d байт, content-type=%s, сигнатура=%s",
-                dest.name, len(data), resp.headers.get("Content-Type"), kind,
-            )
+        async with aiohttp.ClientSession() as http:
+            for _ in range(6):
+                if urlparse(url).scheme != "https":
+                    raise ValueError("Media URL must use HTTPS")
+                ssl_arg = self.ssl_oneme if is_oneme(url) else True
+                async with http.get(url, ssl=ssl_arg, allow_redirects=False) as resp:
+                    if resp.status in {301, 302, 303, 307, 308}:
+                        url = urljoin(url, resp.headers["Location"])
+                        continue
+                    resp.raise_for_status()
+                    data = await resp.read()
+                    dest.write_bytes(data)
+                    head = data[:12]
+                    kind = (
+                        "OGG" if head.startswith(b"OggS")
+                        else "MP4/M4A" if head[4:8] == b"ftyp"
+                        else "MP3" if head.startswith(b"ID3") or head[:2] in (b"\xff\xfb", b"\xff\xf3")
+                        else "JPEG" if head.startswith(b"\xff\xd8")
+                        else "PNG" if head.startswith(b"\x89PNG")
+                        else "WEBP" if head[8:12] == b"WEBP"
+                        else "?"
+                    )
+                    log.info(
+                        "  скачано %s: %d байт, content-type=%s, сигнатура=%s",
+                        dest.name, len(data), resp.headers.get("Content-Type"), kind,
+                    )
+                    return
+            raise ValueError("Too many media redirects")
 
     async def describe_attachments(self, message: Message) -> None:
         for n, att in enumerate(message.attaches or []):

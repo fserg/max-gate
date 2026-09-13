@@ -174,9 +174,10 @@ class AccountRunner:
         provider = self.max.sms if kind == "code" else self.max.password
         if not provider.requested.is_set():
             raise ValueError("Account is not awaiting this credential")
-        if not value.strip():
+        value = value.strip() if kind == "code" else value
+        if not value:
             raise ValueError("Credential cannot be empty")
-        provider.queue.put_nowait(value.strip())
+        provider.queue.put_nowait(value)
 
     async def close(self):
         if self.stopping:
@@ -188,8 +189,9 @@ class AccountRunner:
         if self.polling_task and not self.polling_task.done():
             with suppress(RuntimeError):
                 await self.tg.dispatcher.stop_polling()
+        lost = 0
         if self.relay:
-            await self.relay.close(self.settings.shutdown_timeout)
+            lost = await self.relay.close(self.settings.shutdown_timeout)
         if self.max:
             with suppress(Exception):
                 await self.max.stop()
@@ -198,4 +200,9 @@ class AccountRunner:
             await asyncio.gather(self.polling_task, return_exceptions=True)
         if self.tg:
             await self.tg.stop()
-        await self.event("AccountRunner stopped cleanly")
+        await self.event(
+            f"AccountRunner stopped with {lost} undelivered jobs"
+            if lost
+            else "AccountRunner stopped cleanly",
+            "WARNING" if lost else "INFO",
+        )

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 class Job:
     run: Callable[[], Awaitable]
     failed: Callable[[Exception], Awaitable]
+    direction: str = "max_to_tg"
 
 
 class ChatQueues:
@@ -18,6 +20,7 @@ class ChatQueues:
         self.queues: dict[int, asyncio.Queue] = {}
         self.workers: dict[int, asyncio.Task] = {}
         self.closed = False
+        self.active = {}
 
     def submit(self, chat_link_id: int, job: Job):
         if self.closed:
@@ -41,13 +44,19 @@ class ChatQueues:
                         await self.sleep(max(0, retry_after))
                         continue
                     if attempt == len(self.delays) - 1:
-                        await job.failed(exc)
+                        try:
+                            await job.failed(exc)
+                        except Exception as failure:
+                            logging.getLogger("maxgate").error(
+                                "Relay failure handler failed (%s)", type(failure).__name__
+                            )
                     break
 
     async def _worker(self, key):
         queue = self.queues[key]
         while True:
             job = await queue.get()
+            self.active[key] = job
             try:
                 await self.execute(job)
             except Exception as exc:
@@ -55,6 +64,9 @@ class ChatQueues:
                     "Relay failure handler failed (%s)", type(exc).__name__
                 )
             finally:
+                # Keep canceled jobs until close has accounted for them.
+                if not asyncio.current_task().cancelling():
+                    self.active.pop(key, None)
                 queue.task_done()
 
     async def drain(self):
@@ -70,6 +82,34 @@ class ChatQueues:
             for worker in self.workers.values():
                 worker.cancel()
             await asyncio.gather(*self.workers.values(), return_exceptions=True)
+
+        lost = list(self.active.values())
+        self.active.clear()
+        for queue in self.queues.values():
+            while not queue.empty():
+                lost.append(queue.get_nowait())
+                queue.task_done()
+        for direction, count in Counter(job.direction for job in lost).items():
+            logging.getLogger("maxgate").warning(
+                "Relay shutdown lost %s jobs direction=%s", count, direction
+            )
+
+        async def notify(job):
+            try:
+                await job.failed(RuntimeError("Gate остановлен до завершения доставки"))
+            except Exception as exc:
+                logging.getLogger("maxgate").warning(
+                    "Shutdown notification failed (%s)", type(exc).__name__
+                )
+
+        # Telegram and MAX connections still exist; bound notification time to fit shutdown.
+        tasks = [asyncio.create_task(notify(job)) for job in lost if job.direction == "tg_to_max"]
+        if tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*tasks), 5)
+            except TimeoutError:
+                logging.getLogger("maxgate").warning("Shutdown notifications timed out")
+        return len(lost)
 
     @property
     def size(self):

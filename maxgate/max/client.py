@@ -9,8 +9,9 @@ from pymax.exceptions import ApiError
 from pymax.versions.catalog import VersionCatalog
 
 from maxgate.diagnostics import route_pymax_logging
-from maxgate.domain import Attachment, RelayMessage, escape_max
+from maxgate.domain import Attachment, RelayMessage
 from maxgate.max.media import download
+from maxgate.max.plaintext import GateMessageService
 from maxgate.max.providers import PasswordProvider, SavedSessionOnly, SmsCodeProvider
 from maxgate.max.uploads import GateUploadService
 
@@ -34,6 +35,7 @@ class GateClient(Client):
     def _build_app(self):
         app = super()._build_app()
         app.api.uploads = GateUploadService(app.api.uploads)
+        app.api.messages = GateMessageService(app)
         start = app.start
 
         async def guarded_start():
@@ -199,7 +201,7 @@ class MaxClient:
         try:
             return await self.client.send_message(
                 chat_id,
-                text=escape_max(message.text) or None,
+                text=message.text or None,
                 reply_to=message.reply_to,
                 attachments=attachments or None,
             )
@@ -225,4 +227,4 @@ class MaxClient:
             return await self.send(chat_id, fallback)
 
     async def edit(self, chat_id: int, message_id: int, text: str):
-        return await self.client.edit_message(chat_id, message_id, text=escape_max(text))
+        return await self.client.edit_message(chat_id, message_id, text=text)

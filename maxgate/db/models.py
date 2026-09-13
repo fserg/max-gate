@@ -37,6 +37,7 @@ class Account(Base):
     name: Mapped[str] = mapped_column(String)
     phone: Mapped[str] = mapped_column(String)
     tg_bot_token_enc: Mapped[str] = mapped_column(Text)
+    tg_bot_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     owner_tg_user_id: Mapped[int] = mapped_column(BigInteger)
     inbox_mode: Mapped[str] = mapped_column(default="private")
     inbox_chat_id: Mapped[int | None] = mapped_column(BigInteger)

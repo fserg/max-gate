@@ -26,7 +26,9 @@ def redact(text):
         text,
     )
     text = re.sub(
-        r"(?is)\b(payload|headers|body|input_value)\b['\"]?\s*[:=].*", r"\1=<REDACTED>", text
+        r"(?is)\b(payload[\w]*|extra_head|headers|body|input_value)\b['\"]?\s*[:=].*",
+        r"\1=<REDACTED>",
+        text,
     )
     text = re.sub(r"(?i)\b(?:bearer\s+)[^\s,;]+", "Bearer <REDACTED>", text)
     text = re.sub(

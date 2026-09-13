@@ -377,3 +377,149 @@ async def test_shutdown_cancels_blocked_worker():
     await queues.close(timeout=0.001)
     assert canceled.is_set()
     assert all(task.done() for task in queues.workers.values())
+
+
+async def test_catchup_continues_after_poison_message(relay):
+    link = await relay._link(10)
+    relay.max.chat.last_event_time = 2000
+    relay.max.fetch_history.return_value = [max_message(n) for n in range(1, 4)]
+    send = relay.tg.send
+    attempts = []
+
+    async def reject_one(topic, message, **kwargs):
+        if message.text.endswith("bad"):
+            attempts.append(1)
+            raise ValueError("rejected")
+        return await send(topic, message, **kwargs)
+
+    relay.max.fetch_history.return_value[0].text = "bad"
+    relay.tg.send = reject_one
+    await relay.catch_up()
+    await relay.accept_max(max_message(4))
+    await relay.queues.drain()
+    assert len(attempts) == 3
+    assert [r.max_message_id for r in await relay.store.messages(link.id)] == [2, 3, 4]
+    await relay.catch_up()
+    await relay.queues.drain()
+    assert len([m for _, m in relay.tg.sent if m.text.endswith("hello")]) == 3
+
+
+async def test_concurrent_max_events_keep_ingress_order(relay):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def get_chat(_):
+        entered.set()
+        await release.wait()
+        return relay.max.chat
+
+    relay.max.get_chat.side_effect = get_chat
+    first = asyncio.create_task(relay.accept_max(max_message()))
+    await entered.wait()
+    edit = asyncio.create_task(relay.max_edit(max_message().model_copy(update={"text": "edited"})))
+    delete = asyncio.create_task(relay.max_delete(NS(chat_id=10, message_ids=[1])))
+    update = asyncio.create_task(relay.chat_update(NS(id=10, title="Renamed")))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(first, edit, delete, update)
+    await relay.queues.drain()
+    assert relay.tg.edit_parts.await_count == 2
+    assert relay.tg.edit_parts.call_args_list[0].args[1].text == "Sender\nedited"
+    relay.tg.edit_topic.assert_awaited_once_with(200, "Renamed")
+
+
+async def test_album_caption_edit_preserves_other_parts(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.accept_tg(tg_message(100, album="a"), RelayMessage("A"))
+    await relay.accept_tg(tg_message(101, album="a"), RelayMessage("B"))
+    await relay.queues.drain()
+    await relay.tg_edit(tg_message(101), RelayMessage("edited B"))
+    await relay.queues.drain()
+    relay.max.edit.assert_awaited_with(10, 999, "A\nedited B")
+    await relay.tg_edit(tg_message(101), RelayMessage(""))
+    await relay.queues.drain()
+    relay.max.edit.assert_awaited_with(10, 999, "A")
+
+
+async def test_download_limit_preserves_text_and_other_media(relay):
+    from maxgate.max.media import MediaTooLarge
+
+    async def download(chat, msg, source, dest):
+        if source.name == "large.bin":
+            raise MediaTooLarge(60 * 1024 * 1024)
+        dest.write_bytes(b"ok")
+
+    relay.max.download_attachment.side_effect = download
+    await relay.accept_max(
+        max_message(
+            attaches=[
+                {"_type": "FILE", "fileId": 1, "name": "large.bin", "size": 1, "token": "fake"},
+                {"_type": "FILE", "fileId": 2, "name": "ok.bin", "size": 2, "token": "fake"},
+            ]
+        )
+    )
+    await relay.queues.drain()
+    assert relay.max.download_attachment.await_count == 2
+    message = relay.tg.sent[0][1]
+    assert "hello" in message.text and "large.bin" in message.text
+    assert "62914560" in message.text
+    assert len(message.attachments) == 1
+    assert list(relay.tmp.iterdir()) == []
+
+
+async def test_shutdown_reports_pending_and_running_jobs(caplog):
+    queues = ChatQueues(sleep=no_sleep)
+    entered = asyncio.Event()
+
+    async def blocked():
+        entered.set()
+        await asyncio.Future()
+
+    failed = AsyncMock()
+    queues.submit(1, Job(blocked, failed, direction="tg_to_max"))
+    queues.submit(1, Job(AsyncMock(), failed, direction="tg_to_max"))
+    await entered.wait()
+    assert await queues.close(timeout=0.001) == 2
+    assert failed.await_count == 2
+    assert "tg_to_max" in caplog.text and "2" in caplog.text
+    assert queues.size == 0
+
+
+async def test_forward_content_media_source_and_outer_mapping(relay):
+    original = max_message(
+        40,
+        chat_id=60,
+        attaches=[
+            {"_type": "FILE", "fileId": 1, "name": "file.bin", "size": 2, "token": "fake"},
+        ],
+    ).model_copy(update={"text": "inside", "elements": []})
+    outer = max_message(
+        50, link={"type": "FORWARD", "chatId": 60, "chatName": "source", "message": original}
+    )
+    outer.text = ""
+    await relay.accept_max(outer)
+    await relay.queues.drain()
+    assert "Переслано от source\ninside" in relay.tg.sent[0][1].text
+    assert relay.max.download_attachment.call_args.args[:2] == (60, 40)
+    link = await relay.store.chat(max_chat_id=10)
+    assert len(await relay.store.messages(link.id, max_id=50)) == 1
+    assert await relay.store.messages(link.id, max_id=40) == []
+
+
+async def test_shutdown_tg_jobs_notify_owner(relay, caplog):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    entered = asyncio.Event()
+
+    async def blocked(*_):
+        entered.set()
+        await asyncio.Future()
+
+    relay.max.send.side_effect = blocked
+    await relay.accept_tg(tg_message(100), RelayMessage("first"))
+    await relay.accept_tg(tg_message(101), RelayMessage("second"))
+    await entered.wait()
+    assert await relay.close(0.001) == 2
+    assert sorted(m.reply_to for _, m in relay.tg.sent) == [100, 101]
+    assert all(m.text.startswith("❌") for _, m in relay.tg.sent)
+    assert "lost 2 jobs direction=tg_to_max" in caplog.text

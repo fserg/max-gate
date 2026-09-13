@@ -186,3 +186,18 @@ def test_secondary_api_outage_hides_creation(ui):
     sign_in(app)
     assert not app.text_input
     assert not api.calls
+
+
+@pytest.mark.parametrize("value", ["  spaced password  ", "  "])
+def test_ui_password_preserves_spaces(ui, value):
+    app, api = ui
+    api.account["state"] = "password_required"
+    api.events = [
+        dict(
+            id=1, level="INFO", ts=datetime.now(UTC).isoformat(), message="state=password_required"
+        )
+    ]
+    sign_in(app)
+    app.text_input(key="credential_value_1_password").set_value(value)
+    next(b for b in app.button if b.label == "Отправить пароль").click().run()
+    assert api.calls[-1] == ("POST", "/accounts/1/login/password", {"password": value})
