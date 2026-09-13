@@ -135,3 +135,20 @@ async def test_reaction_adapter_uses_real_pymax_payload():
     assert app.invoke.call_args.args[1]["reaction"]["id"] == "🧪"
     await adapter.remove_reaction(10, 20)
     assert app.invoke.call_args.args[0] == Opcode.MSG_CANCEL_REACTION
+
+
+async def test_voice_api_refusal_does_not_retry_as_file(tmp_path):
+    from pymax.exceptions import ApiError
+
+    from maxgate.domain import Attachment, RelayMessage
+
+    path = tmp_path / "voice.ogg"
+    path.write_bytes(b"OggSfixture")
+    client = SimpleNamespace(
+        on_start=lambda: lambda fn: fn,
+        send_message=AsyncMock(side_effect=ApiError(opcode=64, error="error.message.invalid")),
+    )
+    adapter = MaxClient(client)
+    with pytest.raises(ApiError):
+        await adapter.send(10, RelayMessage(attachments=[Attachment("voice", path)]))
+    client.send_message.assert_awaited_once()

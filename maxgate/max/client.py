@@ -14,6 +14,7 @@ from maxgate.max.media import download
 from maxgate.max.plaintext import GateMessageService
 from maxgate.max.providers import PasswordProvider, SavedSessionOnly, SmsCodeProvider
 from maxgate.max.uploads import GateUploadService
+from maxgate.relay.errors import permanent_max_error
 
 
 class SessionLost(RuntimeError):
@@ -212,8 +213,8 @@ class MaxClient:
                 reply_to=message.reply_to,
                 attachments=attachments or None,
             )
-        except Exception:
-            if not any(a.kind == "voice" for a in message.attachments):
+        except Exception as exc:
+            if permanent_max_error(exc) or not any(a.kind == "voice" for a in message.attachments):
                 raise
             # PyMax 2.4.1 иногда не завершает загрузку Voice (исследование, §6).
             fallback = RelayMessage(

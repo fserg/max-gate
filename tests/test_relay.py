@@ -586,7 +586,7 @@ async def test_reaction_error_sends_one_note(relay):
     relay.max.add_reaction = AsyncMock(side_effect=ValueError("unsupported"))
     await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="emoji", emoji="🧪")]))
     await relay.queues.drain()
-    assert relay.max.add_reaction.await_count == 3
+    assert relay.max.add_reaction.await_count == 1
     relay.tg.note.assert_awaited_once()
     assert relay.tg.note.call_args.args[0].startswith("⛔")
     assert relay.tg.note.call_args.kwargs == dict(topic_id=200, reply_to=100)
@@ -635,3 +635,184 @@ async def test_delete_multipart_notes_only_first_and_retry_progress(relay):
         (200, 102),
     ]
     relay.tg.edit_parts.assert_not_called()
+
+
+async def test_permanent_max_api_error_has_no_retry():
+    from pymax.exceptions import ApiError
+
+    sleeps = []
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    queues = ChatQueues(sleep=sleep)
+    for code in [
+        "error.message.like.unknown.like",
+        "error.message.invalid",
+        "other.server.rejection",
+    ]:
+        run = AsyncMock(side_effect=ApiError(opcode=178, error=code))
+        failed = AsyncMock()
+        await queues.execute(Job(run, failed))
+        assert run.await_count == 1
+        failed.assert_awaited_once()
+    assert sleeps == [1, 1, 1]
+
+
+async def test_blocked_reaction_does_not_delay_message(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "max_to_tg")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked(*args):
+        entered.set()
+        await release.wait()
+
+    relay.max.add_reaction = AsyncMock(side_effect=blocked)
+    await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="emoji", emoji="👍")]))
+    await asyncio.wait_for(entered.wait(), 1)
+    try:
+        await relay.accept_max(max_message(999))
+        for _ in range(100):
+            if relay.tg.sent:
+                break
+            await asyncio.sleep(0.005)
+        assert relay.tg.sent, "Reaction blocked message lane"
+    finally:
+        release.set()
+    await relay.queues.drain()
+
+
+async def test_unsupported_reaction_removes_previous_and_notifies_once(relay):
+    from pymax.exceptions import ApiError
+
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "max_to_tg")
+    relay.max.add_reaction = AsyncMock(
+        side_effect=ApiError(opcode=178, error="error.message.like.unknown.like")
+    )
+    relay.max.remove_reaction = AsyncMock()
+    await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="emoji", emoji="🧪")]))
+    await relay.queues.drain()
+    assert relay.max.add_reaction.await_count == 2
+    assert [c.args[2] for c in relay.max.add_reaction.call_args_list] == ["🧪", "🧪\ufe0f"]
+    relay.max.remove_reaction.assert_awaited_once_with(10, 123)
+    relay.tg.note.assert_awaited_once_with(
+        "⛔ MAX не поддерживает реакцию 🧪, реакция в MAX снята", topic_id=200, reply_to=100
+    )
+
+
+async def test_transient_transport_retries_and_wrapped_api_refusal():
+    from pymax.exceptions import ApiError, UploadError
+
+    queues = ChatQueues(sleep=no_sleep)
+    for error in [
+        TimeoutError(),
+        ConnectionError(),
+        ApiError(opcode=64, error="error.request.timeout"),
+    ]:
+        run = AsyncMock(side_effect=[error, None])
+        failed = AsyncMock()
+        await queues.execute(Job(run, failed))
+        assert run.await_count == 2
+        failed.assert_not_called()
+    wrapped = UploadError("upload failed")
+    wrapped.__cause__ = ApiError(opcode=64, error="error.message.invalid")
+    run = AsyncMock(side_effect=wrapped)
+    failed = AsyncMock()
+    await queues.execute(Job(run, failed))
+    run.assert_awaited_once()
+    failed.assert_awaited_once()
+
+
+async def test_send_and_edit_api_refusals_are_final(relay):
+    from pymax.exceptions import ApiError
+
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    relay.max.send.side_effect = ApiError(opcode=64, error="error.message.invalid")
+    await relay.accept_tg(tg_message(100), RelayMessage("send"))
+    await relay.queues.drain()
+    relay.max.send.assert_awaited_once()
+    await relay.store.link_messages(link.id, 123, [101], "tg_to_max")
+    relay.max.edit.side_effect = ApiError(opcode=67, error="error.message.invalid")
+    await relay.tg_edit(tg_message(101), RelayMessage("edit"))
+    await relay.queues.drain()
+    relay.max.edit.assert_awaited_once()
+    assert len(relay.tg.sent) == 2
+
+
+async def test_reaction_removal_failure_is_reported_once(relay):
+    from pymax.exceptions import ApiError
+
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "max_to_tg")
+    relay.max.add_reaction = AsyncMock(
+        side_effect=ApiError(opcode=178, error="error.message.invalid")
+    )
+    relay.max.remove_reaction = AsyncMock(side_effect=TimeoutError())
+    await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="emoji", emoji="🧪")]))
+    await relay.queues.drain()
+    assert relay.max.add_reaction.await_count == 2
+    assert [c.args[2] for c in relay.max.add_reaction.call_args_list] == ["🧪", "🧪\ufe0f"]
+    relay.max.remove_reaction.assert_awaited_once()
+    relay.tg.note.assert_awaited_once()
+    assert "снять реакцию в MAX не удалось" in relay.tg.note.call_args.args[0]
+
+
+async def test_reaction_lane_keeps_order_with_single_transport_attempt(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "max_to_tg")
+    calls = []
+
+    async def add(chat, message, emoji):
+        calls.append(emoji)
+        if emoji == "👍":
+            raise TimeoutError()
+
+    relay.max.add_reaction = AsyncMock(side_effect=add)
+    for emoji in ["👍", "❤"]:
+        await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="emoji", emoji=emoji)]))
+    await relay.queues.drain()
+    assert calls == ["👍", "❤"]
+    relay.tg.note.assert_awaited_once()
+
+
+async def test_reaction_selector_alternate_succeeds_without_removal(relay):
+    from pymax.exceptions import ApiError
+
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "max_to_tg")
+    relay.max.remove_reaction = AsyncMock()
+    for original, alternate in [("❤", "❤️"), ("❤️", "❤")]:
+        relay.max.add_reaction = AsyncMock(
+            side_effect=[ApiError(opcode=178, error="error.message.like.unknown.like"), None]
+        )
+        await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="emoji", emoji=original)]))
+        await relay.queues.drain()
+        assert [c.args[2] for c in relay.max.add_reaction.call_args_list] == [original, alternate]
+    relay.max.remove_reaction.assert_not_called()
+    relay.tg.note.assert_not_called()
+
+
+async def test_reaction_selector_transport_error_does_not_claim_unsupported(relay):
+    from pymax.exceptions import ApiError
+
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "max_to_tg")
+    relay.max.add_reaction = AsyncMock(
+        side_effect=[ApiError(opcode=178, error="error.message.like.unknown.like"), TimeoutError()]
+    )
+    relay.max.remove_reaction = AsyncMock()
+    await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="emoji", emoji="❤")]))
+    await relay.queues.drain()
+    assert relay.max.add_reaction.await_count == 2
+    relay.max.remove_reaction.assert_not_called()
+    relay.tg.note.assert_awaited_once()
+    assert relay.tg.note.call_args.args[0] == "⛔ не удалось изменить реакцию в MAX"

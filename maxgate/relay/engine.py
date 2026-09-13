@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from maxgate.domain import RelayMessage, join_text, render, utf16_length
 from maxgate.max.media import MediaTooLarge
 from maxgate.max.messages import from_max
-from maxgate.relay.errors import reason, thread_missing
+from maxgate.relay.errors import max_api_error, reason, thread_missing
 from maxgate.relay.queue import ChatQueues, Job
 from maxgate.relay.storage import RelayStorage
 from maxgate.tg.topics import ensure_topic
@@ -503,11 +503,30 @@ class RelayEngine:
 
             async def failed(exc):
                 await self.event(f"Reaction failed: {reason(exc)}", "WARNING")
-                await self.tg.note(
-                    "⛔ не удалось изменить реакцию в MAX",
-                    topic_id=link.topic_id,
-                    reply_to=event.message_id,
-                )
+                text = "⛔ не удалось изменить реакцию в MAX"
+                api_error = max_api_error(exc)
+                if (
+                    api_error is not None
+                    and api_error.error
+                    in {
+                        "error.message.like.unknown.like",
+                        "error.message.invalid",
+                    }
+                    and len(event.new_reaction) == 1
+                    and event.new_reaction[0].type == "emoji"
+                ):
+                    emoji = event.new_reaction[0].emoji
+                    try:
+                        # Also clears a reaction established before this runner started.
+                        await self.max.remove_reaction(link.max_chat_id, row.max_message_id)
+                    except Exception as remove_error:
+                        await self.event(
+                            f"Reaction removal failed: {reason(remove_error)}", "WARNING"
+                        )
+                        text = f"⛔ MAX не поддерживает реакцию {emoji}, снять реакцию в MAX не удалось"
+                    else:
+                        text = f"⛔ MAX не поддерживает реакцию {emoji}, реакция в MAX снята"
+                await self.tg.note(text, topic_id=link.topic_id, reply_to=event.message_id)
 
             async def run():
                 # MAX keeps one reaction per user. Preserve emoji exactly; server validates it.
@@ -516,13 +535,25 @@ class RelayEngine:
                 ):
                     raise ValueError("MAX supports one ordinary emoji reaction")
                 if event.new_reaction:
-                    await self.max.add_reaction(
-                        link.max_chat_id, row.max_message_id, event.new_reaction[0].emoji
-                    )
+                    emoji = event.new_reaction[0].emoji
+                    try:
+                        await self.max.add_reaction(link.max_chat_id, row.max_message_id, emoji)
+                    except Exception as exc:
+                        api_error = max_api_error(exc)
+                        if api_error is None or api_error.error not in {
+                            "error.message.like.unknown.like",
+                            "error.message.invalid",
+                        }:
+                            raise
+                        # A single alternate wire representation, not a queue retry.
+                        alternate = (
+                            emoji.replace("\ufe0f", "") if "\ufe0f" in emoji else emoji + "\ufe0f"
+                        )
+                        await self.max.add_reaction(link.max_chat_id, row.max_message_id, alternate)
                 else:
                     await self.max.remove_reaction(link.max_chat_id, row.max_message_id)
 
-            self.queues.submit(link.id, Job(run, failed, "tg_to_max"))
+            self.queues.submit(link.id, Job(run, failed, "tg_to_max", once=True), lane="reaction")
 
     async def chat_update(self, chat):
         if self.closed:

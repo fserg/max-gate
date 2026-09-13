@@ -6,23 +6,28 @@ from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from maxgate.relay.errors import permanent_max_error
+
 
 @dataclass
 class Job:
     run: Callable[[], Awaitable]
     failed: Callable[[Exception], Awaitable]
     direction: str = "max_to_tg"
+    once: bool = False
 
 
 class ChatQueues:
     def __init__(self, *, sleep=asyncio.sleep, delays=(1, 5, 30)):
         self.sleep, self.delays = sleep, delays
-        self.queues: dict[int, asyncio.Queue] = {}
-        self.workers: dict[int, asyncio.Task] = {}
+        self.queues: dict[int | tuple[int, str], asyncio.Queue] = {}
+        self.workers: dict[int | tuple[int, str], asyncio.Task] = {}
         self.closed = False
         self.active = {}
 
-    def submit(self, chat_link_id: int, job: Job):
+    def submit(self, chat_link_id: int, job: Job, *, lane=None):
+        if lane is not None:
+            chat_link_id = (chat_link_id, lane)
         if self.closed:
             raise RuntimeError("Relay is stopping")
         if chat_link_id not in self.queues:
@@ -32,24 +37,28 @@ class ChatQueues:
 
     async def execute(self, job):
         # Три исполнения с паузами 1/5/30 перед соответствующей попыткой.
-        for attempt, delay in enumerate(self.delays):
-            await self.sleep(delay)
+        delays = (0,) if job.once else self.delays
+        for attempt, delay in enumerate(delays):
+            if delay:
+                await self.sleep(delay)
             while True:
                 try:
                     await job.run()
                     return
                 except Exception as exc:
                     retry_after = getattr(exc, "retry_after", None)
-                    if retry_after is not None:
+                    final = job.once or permanent_max_error(exc)
+                    if retry_after is not None and not final:
                         await self.sleep(max(0, retry_after))
                         continue
-                    if attempt == len(self.delays) - 1:
+                    if final or attempt == len(delays) - 1:
                         try:
                             await job.failed(exc)
                         except Exception as failure:
                             logging.getLogger("maxgate").error(
                                 "Relay failure handler failed (%s)", type(failure).__name__
                             )
+                        return
                     break
 
     async def _worker(self, key):
