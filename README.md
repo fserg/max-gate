@@ -61,4 +61,94 @@ polling. Owner подключает Inbox командой `/start`, после 
 Временные медиа удаляются после обработки задания. Очереди и незавершённые альбомы
 находятся в памяти; после перезапуска входящие MAX восстанавливаются через Catch-up.
 MessageLink старше 90 дней удаляются при старте и далее раз в сутки.
-UI, Docker и конфигурация развёртывания остаются для части 3.
+
+## UI Operator
+
+В `.env` задайте `MAXGATE_UI_PASSWORD`, `MAXGATE_INTERNAL_TOKEN` и
+`MAXGATE_INTERNAL_URL` (локально `http://127.0.0.1:8787`). Запуск отдельно от bridge:
+
+```bash
+uv run streamlit run maxgate/ui/app.py --server.address=127.0.0.1 --server.port=8501
+```
+
+Откройте [UI](http://127.0.0.1:8501) и введите пароль Operator. UI позволяет создавать
+Account, менять Owner/Inbox/Relay Channel, вводить SMS и пароль 2FA, ставить Account
+на паузу, возобновлять работу, выполнять повторный вход, logout и удаление.
+Карточка обновляется каждые две секунды; во время входа виден отсчёт 60 секунд
+от запроса кода/пароля. Вкладки «События» и «Чаты MAX» показывают журнал и ChatLink
+с управлением Muted. При недоступном bridge действия скрываются.
+UI не открывает SQLite и не получает ключ шифрования базы в Docker.
+
+## Развёртывание в Docker
+
+Нужны Docker Engine и Compose. Один образ содержит Python 3.12, uv и зависимости,
+закреплённые в `uv.lock`; процессы bridge и UI работают в разных контейнерах.
+
+1. Скопируйте `.env.example` в `.env`. Заполните `MAXGATE_SECRET_KEY` ключом Fernet
+   (`uv run maxgate gen-key`), задайте собственный пароль `MAXGATE_UI_PASSWORD`
+   и случайный `MAXGATE_INTERNAL_TOKEN`. Не добавляйте `.env` в git.
+2. Запустите production-конфигурацию:
+
+   ```bash
+   docker compose -f docker-compose.yml up --build -d
+   docker compose -f docker-compose.yml ps
+   ```
+
+3. Откройте [127.0.0.1:8501](http://127.0.0.1:8501), войдите по паролю,
+   создайте Account. Для private Inbox включите Topics у бота в BotFather.
+   До SMS-входа включите пароль 2FA в приложении MAX. После входа Owner пишет `/start` боту.
+
+Compose задаёт `MAXGATE_DATA_DIR=/data` поверх локальной `.env`. SQLite хранится
+в именованном томе `maxgate-data`, который доступен только bridge. Миграции
+выполняются автоматически перед запуском. InternalApi слушает `bridge:8080`
+внутри Docker-сети; production-конфигурация не публикует его порт.
+Healthcheck обращается к `/health` с Bearer из окружения, UI ждёт здоровый bridge.
+Оба сервиса используют `restart: unless-stopped`. UI опубликован только на loopback;
+HTTPS и внешний доступ обеспечивает reverse proxy сервера.
+
+Обновление: повторите `docker compose -f docker-compose.yml up --build -d`.
+Остановка: `docker compose -f docker-compose.yml down` (без `-v`, чтобы сохранить базу).
+Резервную копию `maxgate.db` делайте при остановленном bridge; сохраните также
+соответствующий ключ Fernet отдельно от базы.
+
+### Docker с текущими dev-данными
+
+Для локальной проверки создан **неотслеживаемый** `docker-compose.override.yml`:
+
+```yaml
+services:
+  bridge:
+    volumes:
+      - ./temp/data:/data
+    ports:
+      - "127.0.0.1:8787:8080"
+```
+
+Он заменяет именованный том bind-mount существующей dev-базы без изменения
+боевого compose. Образ работает с uid 1000; этот пользователь должен иметь доступ
+к каталогу dev-данных. Не запускайте одновременно локальный bridge и Docker bridge
+с одной базой. В каталоге уже имеется Session Account 1, SMS повторно не требуется.
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose logs -f --tail=100 bridge
+docker compose logs -f --tail=100 ui
+```
+
+В этом режиме `.env` должна содержать тот же ключ Fernet, которым зашифрована dev-база.
+Override, `.env` и `temp/` исключены из git; `.dockerignore` допускает в контекст сборки
+только исходники и файлы зависимостей. Секретов и dev-базы в образе нет.
+
+## Диагностика Relay и загрузок
+
+Каждая выполненная передача пишет INFO с направлением, Account, MaxChat и id сообщений;
+содержимое сообщений в лог не попадает. WARNING/ERROR PyMax направляются в тот же лог.
+Note и журнал содержат сообщение исключения и цепочку причин с удалёнными секретами,
+URL-параметрами, payload и HTTP headers.
+
+В PyMax 2.4.1 HTTP-загрузка File не добавляет корень CA для `fu2.oneme.ru`.
+`maxgate/max/uploads.py` заменяет только сервис загрузки File этого клиента: TLS
+проверяется с отдельным контекстом для `oneme.ru`, а для иных доменов используется
+системное доверие. Перенаправления проверяются по одному; ожидание FILE_READY сохранено.
+Системное хранилище сертификатов не изменяется.

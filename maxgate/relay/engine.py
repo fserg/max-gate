@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -182,6 +183,14 @@ class RelayEngine:
                 attachments.append(replace(attachment, source=dest))
             relay = replace(relay, attachments=attachments)
             sent = await self._send(link, relay, progress)
+        logging.getLogger("maxgate").info(
+            "Relay max_to_tg account=%s chat=%s max_id=%s tg_ids=%s history=%s",
+            self.account.id,
+            link.max_chat_id,
+            message.id,
+            [m.message_id for m in sent],
+            history,
+        )
         if not history:
             await self.store.link_messages(
                 link.id, message.id, [m.message_id for m in sent], "max_to_tg"
@@ -259,6 +268,14 @@ class RelayEngine:
                 )
         await self.store.link_messages(
             link.id, progress["result"].id, [m.message_id for m, _ in items], "tg_to_max"
+        )
+
+        logging.getLogger("maxgate").info(
+            "Relay tg_to_max account=%s chat=%s max_id=%s tg_ids=%s",
+            self.account.id,
+            link.max_chat_id,
+            progress["result"].id,
+            [m.message_id for m, _ in items],
         )
 
     async def catch_up(self):
@@ -359,6 +376,13 @@ class RelayEngine:
             if ids:
                 await self.store.link_messages(link.id, message.id, ids, "max_to_tg")
             self.attachment_signatures[message.id] = signature
+            logging.getLogger("maxgate").info(
+                "Relay max_to_tg edit account=%s chat=%s max_id=%s tg_ids=%s",
+                self.account.id,
+                link.max_chat_id,
+                message.id,
+                [row.tg_message_id for row in links],
+            )
 
         self._submit(link, run)
 
@@ -375,6 +399,13 @@ class RelayEngine:
                         await self.tg.edit_parts(
                             [row.tg_message_id], RelayMessage("🗑 удалено"), topic_id=link.topic_id
                         )
+                        logging.getLogger("maxgate").info(
+                            "Relay max_to_tg delete account=%s chat=%s max_id=%s tg_id=%s",
+                            self.account.id,
+                            link.max_chat_id,
+                            message_id,
+                            row.tg_message_id,
+                        )
 
         self._submit(link, run)
 
@@ -387,6 +418,13 @@ class RelayEngine:
             links = await self.store.messages(link.id, tg_id=message.message_id)
             if links and links[0].direction == "tg_to_max":
                 await self.max.edit(link.max_chat_id, links[0].max_message_id, relay.text)
+                logging.getLogger("maxgate").info(
+                    "Relay tg_to_max edit account=%s chat=%s max_id=%s tg_id=%s",
+                    self.account.id,
+                    link.max_chat_id,
+                    links[0].max_message_id,
+                    message.message_id,
+                )
 
         self._submit(link, run, reply_to=message.message_id, direction="tg_to_max")
 

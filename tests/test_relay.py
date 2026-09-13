@@ -287,11 +287,15 @@ async def test_edits_deletes_and_owner_rename(relay):
 async def test_failed_relay_note_and_temp_cleanup(relay):
     link = await relay._link(10)
     await relay.store.change_chat(link.id, topic_id=200)
-    relay.max.send.side_effect = ValueError("fake-secret must not be displayed")
+    relay.max.send.side_effect = ValueError(
+        "upload rejected; token=do-not-print; payload={sensitive: data}"
+    )
     await relay.accept_tg(tg_message(), RelayMessage("x", attachments=[Attachment("photo", "id")]))
     await relay.queues.drain()
     assert relay.max.send.await_count == 3
-    assert relay.tg.sent[-1][1].text == "❌ ошибка ValueError"
+    assert "upload rejected" in relay.tg.sent[-1][1].text
+    assert "do-not-print" not in relay.tg.sent[-1][1].text
+    assert "sensitive" not in relay.tg.sent[-1][1].text
     assert relay.tg.sent[-1][1].reply_to == 100
     assert list(relay.tmp.iterdir()) == []
 

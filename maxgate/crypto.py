@@ -1,6 +1,8 @@
 from cryptography.fernet import Fernet
 from pydantic import SecretStr
 
+from maxgate.diagnostics import register_secret
+
 
 class Crypto:
     def __init__(self, key: str | SecretStr):
@@ -11,7 +13,10 @@ class Crypto:
         return Fernet.generate_key().decode("ascii")
 
     def encrypt(self, value: str) -> str:
+        register_secret(value)
         return self._fernet.encrypt(value.encode()).decode("ascii")
 
     def decrypt(self, value: str) -> str:
-        return self._fernet.decrypt(value.encode("ascii")).decode()
+        plain = self._fernet.decrypt(value.encode("ascii")).decode()
+        register_secret(plain)
+        return plain

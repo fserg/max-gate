@@ -8,9 +8,11 @@ from pymax.config import ExtraConfig
 from pymax.exceptions import ApiError
 from pymax.versions.catalog import VersionCatalog
 
+from maxgate.diagnostics import route_pymax_logging
 from maxgate.domain import Attachment, RelayMessage, escape_max
 from maxgate.max.media import download
 from maxgate.max.providers import PasswordProvider, SavedSessionOnly, SmsCodeProvider
+from maxgate.max.uploads import GateUploadService
 
 
 class SessionLost(RuntimeError):
@@ -31,6 +33,7 @@ class GateClient(Client):
 
     def _build_app(self):
         app = super()._build_app()
+        app.api.uploads = GateUploadService(app.api.uploads)
         start = app.start
 
         async def guarded_start():
@@ -70,6 +73,7 @@ class MaxClient:
         catalog.remote = False  # каталог уже загружен для этого запуска
         version = app_version or max(catalog.versions, key=lambda v: tuple(map(int, v.split("."))))
         sms, password = SmsCodeProvider(), PasswordProvider()
+        route_pymax_logging()
         client = GateClient(
             phone=phone,
             work_dir=str(data_dir),
@@ -78,7 +82,7 @@ class MaxClient:
             sms_code_provider=sms,
             password_provider=password,
             auth_flow=SavedSessionOnly() if saved_session_only else None,
-            extra_config=ExtraConfig(store=store, relogin=False, log_level="CRITICAL"),
+            extra_config=ExtraConfig(store=store, relogin=False, log_level="WARNING"),
         )
         return cls(client, sms, password)
 

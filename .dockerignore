@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!maxgate/
+!maxgate/**
+**/__pycache__/
+**/*.pyc

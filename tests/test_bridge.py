@@ -47,7 +47,7 @@ async def test_supervisor_five_failures_then_error(storage, tmp_path):
             runs.append(login)
 
         async def run(self):
-            raise ValueError("fake-secret")
+            raise ValueError("simulated transport failure")
 
     async def sleep(delay):
         delays.append(delay)
@@ -61,7 +61,7 @@ async def test_supervisor_five_failures_then_error(storage, tmp_path):
     assert delays == [5, 30, 120, 120]
     account = await supervisor.storage.get(1)
     assert account.state == "error"
-    assert account.state_reason == "ошибка ValueError"
+    assert account.state_reason == "ValueError: simulated transport failure"
     await supervisor.close()
 
 
@@ -214,6 +214,11 @@ async def test_guarded_pymax_translates_revocation(monkeypatch):
     from pymax.exceptions import ApiError
 
     app = NS(start=AsyncMock(side_effect=ApiError(opcode=19, error="FAIL_LOGIN_TOKEN")))
+    app.api = NS(
+        uploads=NS(
+            app=app, file_upload_waiters={}, video_upload_waiters={}, voice_upload_waiters={}
+        )
+    )
     monkeypatch.setattr(Client, "_build_app", lambda _: app)
     client = GateClient.__new__(GateClient)
     with pytest.raises(SessionLost):

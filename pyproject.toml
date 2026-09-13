@@ -11,6 +11,7 @@ dependencies = [
   "SQLAlchemy>=2.0,<2.1",
   "aiosqlite>=0.21,<1",
   "alembic>=1.16,<2",
+  "streamlit==1.54.0",
 ]
 
 [dependency-groups]

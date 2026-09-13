@@ -1,0 +1,37 @@
+services:
+  bridge:
+    build: .
+    image: maxgate:local
+    env_file: .env
+    environment:
+      MAXGATE_DATA_DIR: /data
+      MAXGATE_API_HOST: 0.0.0.0
+      MAXGATE_API_PORT: "8080"
+    command: ["sh", "-c", "maxgate migrate && exec python -m maxgate.bridge"]
+    volumes:
+      - maxgate-data:/data
+    restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "python", "-m", "maxgate.bridge.healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  ui:
+    image: maxgate:local
+    pull_policy: never
+    environment:
+      MAXGATE_UI_PASSWORD: ${MAXGATE_UI_PASSWORD:?Set MAXGATE_UI_PASSWORD in .env}
+      MAXGATE_INTERNAL_TOKEN: ${MAXGATE_INTERNAL_TOKEN:?Set MAXGATE_INTERNAL_TOKEN in .env}
+      MAXGATE_INTERNAL_URL: http://bridge:8080
+    command: ["streamlit", "run", "maxgate/ui/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    ports:
+      #- "127.0.0.1:8501:8501"
+      - "8501:8501"
+    depends_on:
+      bridge:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  maxgate-data:

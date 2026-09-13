@@ -164,6 +164,9 @@ class InternalApi:
         value = body.get(kind)
         if not isinstance(value, str) or not 1 <= len(value) <= 1024:
             raise web.HTTPBadRequest(text="Credential required")
+        from maxgate.diagnostics import register_secret
+
+        register_secret(value)
         await self.supervisor.provide(account.id, kind, value)
         return web.json_response({"accepted": True}, status=202)
 

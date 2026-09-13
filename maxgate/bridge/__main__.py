@@ -11,16 +11,19 @@ from maxgate.bridge.supervisor import Supervisor
 from maxgate.config import Settings
 from maxgate.crypto import Crypto
 from maxgate.db import create_storage
+from maxgate.diagnostics import SafeFormatter, register_secret, route_pymax_logging
 
 
 async def run(settings):
     if not settings.internal_token or not settings.internal_token.get_secret_value():
         raise ValueError("MAXGATE_INTERNAL_TOKEN required")
+    for name in ("secret_key", "internal_token", "ui_password", "tel", "tg_bot_token", "max_pass"):
+        register_secret(getattr(settings, name, None))
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("maxgate")
     logger.setLevel(logging.INFO)
     logger.propagate = False
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    formatter = SafeFormatter("%(asctime)s %(levelname)s %(message)s")
     handlers = [
         logging.StreamHandler(),
         RotatingFileHandler(
@@ -32,8 +35,9 @@ async def run(settings):
         logger.addHandler(handler)
     # Сторонние loggers могут печатать URL с токеном и payload. Только журнал Gate.
     logging.getLogger().setLevel(logging.CRITICAL)
-    for name in ("aiogram", "aiohttp", "pymax"):
+    for name in ("aiogram", "aiohttp"):
         logging.getLogger(name).setLevel(logging.CRITICAL)
+    route_pymax_logging()
     engine, sessions = create_storage(settings.database_url)
     supervisor = Supervisor(sessions, Crypto(settings.secret_key), settings)
     api = InternalApi(supervisor, settings.internal_token.get_secret_value())

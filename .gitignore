@@ -38,3 +38,6 @@ htmlcov/
 .DS_Store
 
 temp/
+
+# Local Docker data binding and port overrides
+docker-compose.override.yml

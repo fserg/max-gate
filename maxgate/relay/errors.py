@@ -1,16 +1,10 @@
 """Безопасные причины ошибок: payload и credentials не попадают в Note/журнал."""
 
+from maxgate.diagnostics import exception_message
+
 
 def reason(exc):
-    kind = type(exc).__name__
-    known = {
-        "TimeoutError": "истекло время ожидания",
-        "ConnectionError": "соединение прервано",
-        "TelegramForbiddenError": "боту запрещён доступ к Inbox",
-        "MediaTooLarge": "размер файла превышает лимит Telegram",
-        "SessionLost": "Session MAX отозвана",
-    }
-    return known.get(kind, f"ошибка {kind}")
+    return exception_message(exc)
 
 
 def thread_missing(exc):
