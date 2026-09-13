@@ -65,6 +65,7 @@ class FakeTg:
         self.create_topic = AsyncMock(return_value=200)
         self.edit_topic = AsyncMock()
         self.edit_parts = AsyncMock()
+        self.deletion_note = AsyncMock()
         self.note = AsyncMock()
         self.download = AsyncMock(side_effect=self._download)
 
@@ -272,8 +273,9 @@ async def test_edits_deletes_and_owner_rename(relay):
     await relay.max_edit(max_message().model_copy(update={"text": "edited"}))
     await relay.max_delete(NS(chat_id=10, message_ids=[1]))
     await relay.queues.drain()
-    assert relay.tg.edit_parts.await_count == 2
-    assert relay.tg.edit_parts.call_args.args[1].text == "🗑 удалено"
+    assert relay.tg.edit_parts.await_count == 1
+    relay.tg.deletion_note.assert_awaited_once()
+    relay.tg.deletion_note.assert_awaited_once_with(200, 100)
     await relay.chat_update(NS(id=10, title="New"))
     await relay.queues.drain()
     relay.tg.edit_topic.assert_awaited_once_with(200, "New")
@@ -336,7 +338,7 @@ async def test_commands_and_tg_edit(relay):
     assert not (await relay.store.chat(link_id=link.id)).muted
     await relay.tg_edit(tg_message(), RelayMessage("edited"))
     await relay.queues.drain()
-    relay.max.edit.assert_awaited_once_with(10, 5, "edited")
+    relay.max.edit.assert_awaited_once_with(10, 5, "edited", entities=[])
 
 
 async def test_late_inbox_does_not_release_expired_message(relay):
@@ -422,7 +424,8 @@ async def test_concurrent_max_events_keep_ingress_order(relay):
     release.set()
     await asyncio.gather(first, edit, delete, update)
     await relay.queues.drain()
-    assert relay.tg.edit_parts.await_count == 2
+    assert relay.tg.edit_parts.await_count == 1
+    relay.tg.deletion_note.assert_awaited_once()
     assert relay.tg.edit_parts.call_args_list[0].args[1].text == "Sender\nedited"
     relay.tg.edit_topic.assert_awaited_once_with(200, "Renamed")
 
@@ -435,10 +438,10 @@ async def test_album_caption_edit_preserves_other_parts(relay):
     await relay.queues.drain()
     await relay.tg_edit(tg_message(101), RelayMessage("edited B"))
     await relay.queues.drain()
-    relay.max.edit.assert_awaited_with(10, 999, "A\nedited B")
+    relay.max.edit.assert_awaited_with(10, 999, "A\nedited B", entities=[])
     await relay.tg_edit(tg_message(101), RelayMessage(""))
     await relay.queues.drain()
-    relay.max.edit.assert_awaited_with(10, 999, "A")
+    relay.max.edit.assert_awaited_with(10, 999, "A", entities=[])
 
 
 async def test_download_limit_preserves_text_and_other_media(relay):
@@ -552,7 +555,8 @@ async def test_history_requires_count_links_dedup_and_reply_edit_delete(relay):
     await relay.max_delete(NS(chat_id=10, message_ids=[123]))
     await relay.queues.drain()
     assert relay.max.send.call_args.args[1].reply_to == 123
-    assert relay.tg.edit_parts.await_count == 2
+    assert relay.tg.edit_parts.await_count == 1
+    relay.tg.deletion_note.assert_awaited_once()
 
 
 async def test_reaction_add_replace_remove_and_unknown_link(relay):
@@ -597,3 +601,37 @@ async def test_reaction_custom_emoji_rejected_without_max(relay):
     await relay.queues.drain()
     relay.max.add_reaction.assert_not_called()
     relay.tg.note.assert_awaited_once()
+
+
+async def test_formatted_album_send_and_edit(relay):
+    from maxgate.domain import Entity
+
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.accept_tg(tg_message(100, album="a"), RelayMessage("😀A", [Entity("bold", 2, 1)]))
+    await relay.accept_tg(tg_message(101, album="a"), RelayMessage("B", [Entity("italic", 0, 1)]))
+    await relay.queues.drain()
+    sent = relay.max.send.call_args.args[1]
+    assert sent.text == "😀A\nB"
+    assert sent.entities == [Entity("bold", 2, 1), Entity("italic", 4, 1)]
+    await relay.tg_edit(tg_message(101), RelayMessage("BC", [Entity("code", 0, 2)]))
+    await relay.queues.drain()
+    relay.max.edit.assert_awaited_with(
+        10, 999, "😀A\nBC", entities=[Entity("bold", 2, 1), Entity("code", 4, 2)]
+    )
+
+
+async def test_delete_multipart_notes_only_first_and_retry_progress(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 5, [100, 101], "max_to_tg")
+    await relay.store.link_messages(link.id, 6, [102], "max_to_tg")
+    relay.tg.deletion_note.side_effect = [None, ValueError("transient"), None]
+    await relay.max_delete(NS(chat_id=10, message_ids=[5, 6]))
+    await relay.queues.drain()
+    assert [c.args for c in relay.tg.deletion_note.call_args_list] == [
+        (200, 100),
+        (200, 102),
+        (200, 102),
+    ]
+    relay.tg.edit_parts.assert_not_called()

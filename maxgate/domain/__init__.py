@@ -75,7 +75,9 @@ def max_entities(text: str, elements) -> list[Entity]:
         boundaries.add(offset)
     for element in elements or []:
         kind = ELEMENT_TYPES.get(value(element, "type"))
-        start = value(element, "from_", value(element, "from"))
+        start = value(element, "from_")
+        if start is None:
+            start = value(element, "from")
         length = value(element, "length")
         # Не угадываем отсутствующие смещения LINK: текст остаётся целым.
         if (
@@ -163,3 +165,71 @@ def voice_kind(header: bytes) -> str:
     ):
         return "voice"
     return "audio"
+
+
+TG_ELEMENT_TYPES = {
+    "bold": "STRONG",
+    "italic": "EMPHASIZED",
+    "underline": "UNDERLINE",
+    "strikethrough": "STRIKETHROUGH",
+    "code": "MONOSPACED",
+    "pre": "CODE",
+    "text_link": "LINK",
+    "url": "LINK",
+    "blockquote": "QUOTE",
+}
+
+
+def telegram_entities(text, entities):
+    """Normalize supported UTF-16 ranges, resolving URL text before any splitting."""
+    boundaries = {0}
+    offset = 0
+    for char in text:
+        offset += utf16_length(char)
+        boundaries.add(offset)
+    result = []
+    for e in entities or []:
+        kind, start, length = value(e, "type"), value(e, "offset"), value(e, "length")
+        if (
+            kind not in TG_ELEMENT_TYPES
+            or not isinstance(start, int)
+            or not isinstance(length, int)
+            or length <= 0
+            or start not in boundaries
+            or start + length not in boundaries
+        ):
+            continue
+        url = value(e, "url")
+        if kind == "url":
+            url = text.encode("utf-16-le")[2 * start : 2 * (start + length)].decode("utf-16-le")
+            kind = "text_link"
+        if kind == "text_link" and not url:
+            continue
+        result.append(Entity(kind, start, length, url))
+    return result
+
+
+def max_elements(text, entities):
+    return [
+        dict(
+            type=TG_ELEMENT_TYPES[e.type],
+            **{"from": e.offset},
+            length=e.length,
+            **({"attributes": {"url": e.url}} if e.type == "text_link" else {}),
+        )
+        for e in telegram_entities(text, entities)
+    ]
+
+
+def join_text(messages):
+    """Join album captions and translate every entity to the combined UTF-16 offset."""
+    text, entities = "", []
+    for message in messages:
+        if not message.text:
+            continue
+        if text:
+            text += "\n"
+        shift = utf16_length(text)
+        entities.extend(replace(e, offset=e.offset + shift) for e in message.entities)
+        text += message.text
+    return RelayMessage(text=text, entities=entities)

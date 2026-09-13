@@ -173,6 +173,31 @@ class TgBot:
             else None,
         )
 
+    async def deletion_note(self, topic_id, message_id):
+        kwargs = dict(
+            chat_id=self.account.inbox_chat_id,
+            message_thread_id=topic_id,
+            text="🗑️ удалено!",
+            parse_mode=None,
+        )
+        try:
+            return await self.bot.send_message(
+                **kwargs, reply_parameters=ReplyParameters(message_id=message_id)
+            )
+        except TelegramBadRequest as exc:
+            reason = exc.message.lower()
+            if not any(
+                marker in reason
+                for marker in (
+                    "message to be replied not found",
+                    "message to be replied to not found",
+                    "reply message not found",
+                    "replied message not found",
+                )
+            ):
+                raise
+            return await self.bot.send_message(**kwargs)
+
     async def edit_parts(self, message_ids, message: RelayMessage, *, topic_id=None, progress=None):
         # Тип исходной части восстанавливается по ответу Bot API, в том числе после рестарта.
         parts = split_text(replace(message, attachments=[])) if message.text else []

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from maxgate.domain import RelayMessage, render, utf16_length
+from maxgate.domain import RelayMessage, join_text, render, utf16_length
 from maxgate.max.media import MediaTooLarge
 from maxgate.max.messages import from_max
 from maxgate.relay.errors import reason, thread_missing
@@ -258,12 +258,13 @@ class RelayEngine:
         if await self.store.messages(link.id, tg_id=source.message_id):
             return
         first = items[0][1]
-        text = "\n".join(relay.text for _, relay in items if relay.text)
+        combined = join_text([relay for _, relay in items])
         attachments = [a for _, relay in items for a in relay.attachments]
         replies = await self.store.messages(link.id, tg_id=first.reply_to) if first.reply_to else []
         relay = replace(
             first,
-            text=text,
+            text=combined.text,
+            entities=combined.entities,
             attachments=attachments,
             reply_to=replies[0].max_message_id if replies else None,
         )
@@ -290,7 +291,7 @@ class RelayEngine:
 
         if len(items) > 1:
             self.album_captions[(link.id, progress["result"].id)] = {
-                m.message_id: relay.text for m, relay in items
+                m.message_id: replace(relay, attachments=[]) for m, relay in items
             }
 
         logging.getLogger("maxgate").info(
@@ -429,24 +430,29 @@ class RelayEngine:
             if link is None:
                 return
 
+            delivered = set()
+
             async def run():
                 current = await self.store.chat(link_id=link.id)
                 for message_id in event.message_ids:
-                    links = await self.store.messages(link.id, max_id=message_id)
-                    for row in links:
-                        if row.direction == "max_to_tg":
-                            await self.tg.edit_parts(
-                                [row.tg_message_id],
-                                RelayMessage("🗑 удалено"),
-                                topic_id=current.topic_id,
-                            )
-                            logging.getLogger("maxgate").info(
-                                "Relay max_to_tg delete account=%s chat=%s max_id=%s tg_id=%s",
-                                self.account.id,
-                                link.max_chat_id,
-                                message_id,
-                                row.tg_message_id,
-                            )
+                    if message_id in delivered:
+                        continue
+                    links = [
+                        r
+                        for r in await self.store.messages(link.id, max_id=message_id)
+                        if r.direction == "max_to_tg"
+                    ]
+                    if not links:
+                        continue
+                    await self.tg.deletion_note(current.topic_id, links[0].tg_message_id)
+                    delivered.add(message_id)
+                    logging.getLogger("maxgate").info(
+                        "Relay deletion Note account=%s chat=%s max_id=%s tg_id=%s",
+                        self.account.id,
+                        link.max_chat_id,
+                        message_id,
+                        links[0].tg_message_id,
+                    )
 
             self._submit(link, run)
 
@@ -462,11 +468,16 @@ class RelayEngine:
                 links = await self.store.messages(link.id, tg_id=message.message_id)
                 if links and links[0].direction == "tg_to_max":
                     captions = self.album_captions.get((link.id, links[0].max_message_id))
-                    text = relay.text
+                    combined = relay
                     if captions is not None:
-                        captions[message.message_id] = relay.text
-                        text = "\n".join(captions[key] for key in sorted(captions) if captions[key])
-                    await self.max.edit(link.max_chat_id, links[0].max_message_id, text)
+                        captions[message.message_id] = replace(relay, attachments=[])
+                        combined = join_text([captions[key] for key in sorted(captions)])
+                    await self.max.edit(
+                        link.max_chat_id,
+                        links[0].max_message_id,
+                        combined.text,
+                        entities=combined.entities,
+                    )
                     logging.getLogger("maxgate").info(
                         "Relay tg_to_max edit account=%s chat=%s max_id=%s tg_id=%s",
                         self.account.id,

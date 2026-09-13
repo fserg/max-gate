@@ -9,7 +9,7 @@ from pymax.exceptions import ApiError
 from pymax.versions.catalog import VersionCatalog
 
 from maxgate.diagnostics import route_pymax_logging
-from maxgate.domain import Attachment, RelayMessage
+from maxgate.domain import Attachment, RelayMessage, max_elements
 from maxgate.max.media import download
 from maxgate.max.plaintext import GateMessageService
 from maxgate.max.providers import PasswordProvider, SavedSessionOnly, SmsCodeProvider
@@ -31,6 +31,12 @@ def is_session_lost(exc):
 
 class GateClient(Client):
     """PyMax 2.4.1: прерывает цикл start при отзыве Session и relogin=False."""
+
+    async def send_message(self, *args, elements=None, **kwargs):
+        return await self._app.api.messages.send_message(*args, elements=elements, **kwargs)
+
+    async def edit_message(self, *args, elements=None, **kwargs):
+        return await self._app.api.messages.edit_message(*args, elements=elements, **kwargs)
 
     def _build_app(self):
         app = super()._build_app()
@@ -202,6 +208,7 @@ class MaxClient:
             return await self.client.send_message(
                 chat_id,
                 text=message.text or None,
+                elements=max_elements(message.text, message.entities),
                 reply_to=message.reply_to,
                 attachments=attachments or None,
             )
@@ -211,6 +218,7 @@ class MaxClient:
             # PyMax 2.4.1 иногда не завершает загрузку Voice (исследование, §6).
             fallback = RelayMessage(
                 text=message.text + "\n🎤 Голосовое сообщением-файлом",
+                entities=message.entities,
                 reply_to=message.reply_to,
                 attachments=[
                     Attachment(
@@ -226,8 +234,10 @@ class MaxClient:
             )
             return await self.send(chat_id, fallback)
 
-    async def edit(self, chat_id: int, message_id: int, text: str):
-        return await self.client.edit_message(chat_id, message_id, text=text)
+    async def edit(self, chat_id: int, message_id: int, text: str, *, entities=None):
+        return await self.client.edit_message(
+            chat_id, message_id, text=text, elements=max_elements(text, entities)
+        )
 
     async def add_reaction(self, chat_id, message_id, emoji):
         return await self.client.add_reaction(chat_id, message_id, emoji)

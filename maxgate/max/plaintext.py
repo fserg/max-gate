@@ -29,6 +29,7 @@ class GateMessageService(MessageService):
         *,
         notify: bool = True,
         send_at: DateTimeUnion | None = None,
+        elements: list | None = None,
     ) -> Message:
         logger.info("sending message chat_id=%s text_len=%s", chat_id, len(text) if text else 0)
 
@@ -36,7 +37,7 @@ class GateMessageService(MessageService):
             logger.error("send_message failed: no text or attachments provided")
             raise ValueError("Either text or attachments must be provided")
 
-        clean_text, elements = text, []
+        clean_text, elements = text, elements or []
 
         attaches = await self._upload_attachments(attachments)
 
@@ -80,12 +81,14 @@ class GateMessageService(MessageService):
         message_id: int,
         text: str | None = None,
         attachments: SendAttachments = None,
+        *,
+        elements: list | None = None,
     ) -> Message:
         if text is None and not attachments:
             logger.error("edit_message failed: no text or attachments provided")
             raise ValueError("Either text or attachments must be provided")
 
-        clean_text, elements = text, []
+        clean_text, elements = text, elements or []
 
         attaches = await self._upload_attachments(attachments)
 

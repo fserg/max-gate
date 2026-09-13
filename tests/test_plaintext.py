@@ -51,3 +51,27 @@ def test_readme_uses_relay_term():
     from pathlib import Path
 
     assert "пересылк" not in Path("README.md").read_text().lower()
+
+
+async def test_explicit_elements_send_edit_without_markdown():
+    from maxgate.domain import Entity, max_elements
+
+    text = "😀 *bold* link"
+    elements = max_elements(
+        text, [Entity("bold", 3, 6), Entity("text_link", 10, 4, "https://example.org")]
+    )
+    calls = []
+
+    async def invoke(opcode, payload):
+        calls.append(payload)
+        body = payload["message"] if opcode == Opcode.MSG_SEND else payload
+        msg = dict(id=1, time=1, type="USER", text=body["text"], elements=body["elements"])
+        return NS(payload=msg if opcode == Opcode.MSG_SEND else {"message": msg})
+
+    app = NS(invoke=invoke, api=NS())
+    service = GateMessageService(app)
+    app.api.messages = service
+    sent = await service.send_message(10, text, elements=elements)
+    edited = await service.edit_message(10, 1, text, elements=elements)
+    assert sent.text == edited.text == text
+    assert calls[0]["message"]["elements"] == calls[1]["elements"] == elements
