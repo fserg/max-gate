@@ -484,6 +484,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "sqlalchemy" },
     { name = "streamlit" },
+    { name = "streamlit-shadcn-ui" },
 ]
 
 [package.dev-dependencies]
@@ -503,6 +504,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.10,<3" },
     { name = "sqlalchemy", specifier = ">=2.0,<2.1" },
     { name = "streamlit", specifier = "==1.54.0" },
+    { name = "streamlit-shadcn-ui", specifier = ">=0.1.19" },
 ]
 
 [package.metadata.requires-dev]
@@ -633,6 +635,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/20/20/25e0f4dc178a6bc0696793720055519a0de89e7661dae886992decbd2f81/pillow-12.3.0-cp312-cp312-win32.whl", hash = "sha256:dbce0b29841537a2fa4a214c2bbf14de3587c9680caa9b4e217568472490b28f", size = 6472684, upload-time = "2026-07-01T11:54:19.839Z" },
     { url = "https://files.pythonhosted.org/packages/45/89/da2f7971a317f83d807fdd4065c0af40208e59e692cc43d315a71a0e96d1/pillow-12.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09", size = 7227137, upload-time = "2026-07-01T11:54:22.025Z" },
     { url = "https://files.pythonhosted.org/packages/de/47/4845a0a6c0dbf1db8456bd9fc791f13c5ced7ced20606d08a0aacfd25b49/pillow-12.3.0-cp312-cp312-win_arm64.whl", hash = "sha256:331b624368d4f1d069149002f25f44bc61c8919ce8ddb3c45bdad8f6e2d89510", size = 2568267, upload-time = "2026-07-01T11:54:24.051Z" },
+]
+
+[[package]]
+name = "plotly"
+version = "7.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "narwhals" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ec/9e/8894e8eae20a5b2a44aa568b1d2d80291e8eea6ce7bc75cdc7a152aef0ac/plotly-7.0.0.tar.gz", hash = "sha256:08b21f1244a97e7a1a699833c4bb2678475aa108b3f1989886ed0b038ebfd849", size = 6218668, upload-time = "2026-08-25T17:47:29.088Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/2f/6f492108d9955bac97979d9949c1b35eab30fc630b1f22bbdd2c7cacbab4/plotly-7.0.0-py3-none-any.whl", hash = "sha256:78cbf7bd06d1b05bb3b8ec1b709864695229b55151b6f7530fbf55517ead6fdd", size = 9052859, upload-time = "2026-08-25T17:47:24.689Z" },
 ]
 
 [[package]]
@@ -1011,6 +1026,32 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/be/66/d887ee80ea85f035baee607c60af024994e17ae9b921277fca9675e76ecf/streamlit-1.54.0.tar.gz", hash = "sha256:09965e6ae7eb0357091725de1ce2a3f7e4be155c2464c505c40a3da77ab69dd8", size = 8662292, upload-time = "2026-02-04T16:37:54.734Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/48/1d/40de1819374b4f0507411a60f4d2de0d620a9b10c817de5925799132b6c9/streamlit-1.54.0-py3-none-any.whl", hash = "sha256:a7b67d6293a9f5f6b4d4c7acdbc4980d7d9f049e78e404125022ecb1712f79fc", size = 9119730, upload-time = "2026-02-04T16:37:52.199Z" },
+]
+
+[[package]]
+name = "streamlit-extras"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "plotly" },
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/52/e2/34510d0639ee4e321c7e92205c990a15957b46aadaab56eef3bc59e15d23/streamlit_extras-1.6.0.tar.gz", hash = "sha256:d75bfabd2be35f1fba6bce3935d1c446cfcfbe03123478df1b5ba4a02a7c49c0", size = 408284, upload-time = "2026-05-15T15:33:22.666Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/85/6a/3cf1af290973094d8104c5ced9e5e5913c90852492419774286550d6c7bc/streamlit_extras-1.6.0-py3-none-any.whl", hash = "sha256:99c38dad3cd07d088da809c97f3e35cd65f97c983480c3115c724f0324fc8eee", size = 1042438, upload-time = "2026-05-15T15:33:24.18Z" },
+]
+
+[[package]]
+name = "streamlit-shadcn-ui"
+version = "0.1.19"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "streamlit" },
+    { name = "streamlit-extras" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/44/988e29d4853d0420e7c378393218a92bd897dbb399a7380102f44d821535/streamlit_shadcn_ui-0.1.19.tar.gz", hash = "sha256:70023d343c74a9542180092769ba26841a9248cdfe1a13b2415bfc6710f9b1bd", size = 330491, upload-time = "2025-10-17T18:49:49.827Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/25/1f5d992affc461a72f339876fbd3a1cde6b96aa3df08405bd3bd758f1f35/streamlit_shadcn_ui-0.1.19-py3-none-any.whl", hash = "sha256:73466ba1cc690794d41f5b67fd271c27ed8f78c6a3437d9df90a5409816299ec", size = 360639, upload-time = "2025-10-17T18:49:47.512Z" },
 ]
 
 [[package]]

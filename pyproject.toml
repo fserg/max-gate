@@ -12,6 +12,7 @@ dependencies = [
   "aiosqlite>=0.21,<1",
   "alembic>=1.16,<2",
   "streamlit==1.54.0",
+  "streamlit-shadcn-ui>=0.1.19",
 ]
 
 [dependency-groups]
