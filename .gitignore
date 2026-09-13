@@ -1,25 +1,29 @@
-# Binaries and build output
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-/bin/
-/dist/
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Go workspace files
-go.work
-go.work.sum
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+*.egg
 
 # Coverage and profiling reports
-coverage.out
-coverage.html
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 *.prof
-
-# Dependency and tool caches
-.cache/
 
 # Environment and local configuration
 .env
