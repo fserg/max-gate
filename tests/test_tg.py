@@ -130,3 +130,47 @@ def test_receive_media_and_fallback():
     assert "Контакт:" in relay.text
     relay = from_telegram(message(location={"latitude": 1, "longitude": 2}))
     assert "https://maps.google.com/?q=1.0,2.0" in relay.text
+
+
+async def test_partial_send_retry_keeps_successful_parts():
+    bot = SimpleNamespace(
+        send_message=AsyncMock(
+            side_effect=[
+                SimpleNamespace(message_id=1),
+                ValueError("retry"),
+                SimpleNamespace(message_id=2),
+            ]
+        )
+    )
+    progress = []
+    relay = RelayMessage("a" * 5000)
+    with pytest.raises(ValueError):
+        await send(bot, 10, 2, relay, progress=progress)
+    result = await send(bot, 10, 2, relay, progress=progress)
+    assert [m.message_id for m in result] == [1, 2]
+    assert bot.send_message.await_count == 3
+    assert len(bot.send_message.call_args_list[-1].kwargs["text"]) == 904
+
+
+async def test_edit_growing_caption_keeps_entire_text(storage):
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import EditMessageText
+
+    _, sessions, _ = storage
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(
+            side_effect=TelegramBadRequest(
+                method=EditMessageText(chat_id=10, message_id=1, text="x"),
+                message="Bad Request: there is no text in the message to edit",
+            )
+        ),
+        edit_message_caption=AsyncMock(),
+        send_message=AsyncMock(
+            side_effect=[SimpleNamespace(message_id=2), SimpleNamespace(message_id=3)]
+        ),
+    )
+    adapter = TgBot("", SimpleNamespace(inbox_chat_id=10, owner_tg_user_id=1), sessions, bot=bot)
+    ids = await adapter.edit_parts([1], RelayMessage("a" * 5000), topic_id=2)
+    assert ids == [1, 2, 3]
+    assert bot.edit_message_caption.call_args.kwargs["caption"] == ""
+    assert "".join(call.kwargs["text"] for call in bot.send_message.call_args_list) == "a" * 5000

@@ -60,9 +60,23 @@ async def download(bot, attachment, dest: Path) -> Path:
         raise
 
 
-async def send(bot, inbox_chat_id: int, topic_id: int, message: RelayMessage):
+async def send(bot, inbox_chat_id: int, topic_id: int, message: RelayMessage, *, progress=None):
     """Отправляет подготовленные локальные вложения. Возвращает все части MessageLink."""
     result = []
+    progress = progress if progress is not None else []
+    operation = 0
+
+    async def deliver(method, *, album=False, **kwargs):
+        nonlocal operation
+        if operation < len(progress):
+            sent = progress[operation]
+        else:
+            response = await method(**kwargs)
+            sent = response if album else [response]
+            progress.append(sent)
+        operation += 1
+        return sent
+
     common = dict(chat_id=inbox_chat_id, message_thread_id=topic_id)
     if message.reply_to is not None:
         common["reply_parameters"] = ReplyParameters(
@@ -121,10 +135,12 @@ async def send(bot, inbox_chat_id: int, topic_id: int, message: RelayMessage):
                 )
                 for n, (a, f) in enumerate(batch)
             ]
-            result.extend(await bot.send_media_group(media=items, **common))
+            result.extend(await deliver(bot.send_media_group, album=True, media=items, **common))
         elif attachment.kind in {"contact", "location"}:
-            result.append(
-                await getattr(bot, f"send_{attachment.kind}")(**attachment.source, **common)
+            result.extend(
+                await deliver(
+                    getattr(bot, f"send_{attachment.kind}"), **attachment.source, **common
+                )
             )
         else:
             kwargs = {attachment.kind: file, **common}
@@ -137,14 +153,18 @@ async def send(bot, inbox_chat_id: int, topic_id: int, message: RelayMessage):
                 "audio",
             }:
                 kwargs["duration"] = attachment.duration // 1000
-            result.append(await getattr(bot, f"send_{attachment.kind}")(**kwargs))
+            result.extend(await deliver(getattr(bot, f"send_{attachment.kind}"), **kwargs))
         caption, caption_entities = None, None
         index += len(batch)
     if pending_text.text:
         for part in split_text(pending_text):
-            result.append(
-                await bot.send_message(
-                    text=part.text, entities=entities(part.entities), parse_mode=None, **common
+            result.extend(
+                await deliver(
+                    bot.send_message,
+                    text=part.text,
+                    entities=entities(part.entities),
+                    parse_mode=None,
+                    **common,
                 )
             )
     return result

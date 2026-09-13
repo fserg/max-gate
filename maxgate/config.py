@@ -11,6 +11,9 @@ class Settings(BaseSettings):
 
     secret_key: SecretStr
     data_dir: Path = Path("/data")
+    api_host: str = "127.0.0.1"
+    api_port: int = Field(default=8080, ge=1, le=65535)
+    shutdown_timeout: float = Field(default=30, ge=0)
     max_app_version: str | None = None
     internal_token: SecretStr | None = None
     ui_password: SecretStr | None = None

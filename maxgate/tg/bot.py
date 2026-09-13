@@ -1,9 +1,13 @@
+from dataclasses import replace
+
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, ReplyParameters
 from sqlalchemy import update
 
 from maxgate.db.models import Account
+from maxgate.domain import RelayMessage, split_text
 from maxgate.tg import media
 from maxgate.tg.messages import from_telegram
 
@@ -19,6 +23,9 @@ class TgBot:
         self._sessions = session_factory
         self.dispatcher = Dispatcher()
         self.on_message = None
+        self.on_command = None
+        self.on_inbox_bound = None
+        self.on_polling_started = None
         self.on_edit = None
         self.on_topic_edited = None
         self._pending_titles: dict[int, str] = {}
@@ -63,6 +70,8 @@ class TgBot:
                 .values(inbox_chat_id=message.chat.id)
             )
         self.account.inbox_chat_id = message.chat.id
+        if self.on_inbox_bound:
+            await self.on_inbox_bound()
         await self.bot.send_message(chat_id=message.chat.id, text="Inbox подключён")
 
     def _in_inbox(self, message):
@@ -70,6 +79,8 @@ class TgBot:
 
     async def _message(self, message: Message):
         if not self._in_inbox(message):
+            return
+        if self.on_command and await self.on_command(message):
             return
         if message.forum_topic_edited:
             title = message.forum_topic_edited.name
@@ -125,15 +136,87 @@ class TgBot:
             self._pending_titles.pop(topic_id, None)
             raise
 
-    async def send(self, topic_id, message):
-        return await media.send(self.bot, self.account.inbox_chat_id, topic_id, message)
+    async def send(self, topic_id, message, *, progress=None):
+        return await media.send(
+            self.bot, self.account.inbox_chat_id, topic_id, message, progress=progress
+        )
 
     async def download(self, attachment, dest):
         return await media.download(self.bot, attachment, dest)
 
+    async def note(self, text, *, topic_id=None, reply_to=None):
+        return await self.bot.send_message(
+            chat_id=self.account.inbox_chat_id,
+            message_thread_id=topic_id,
+            text=text,
+            parse_mode=None,
+            reply_parameters=ReplyParameters(message_id=reply_to, allow_sending_without_reply=True)
+            if reply_to
+            else None,
+        )
+
+    async def edit_parts(self, message_ids, message: RelayMessage, *, topic_id=None, progress=None):
+        # Тип исходной части восстанавливается по ответу Bot API, в том числе после рестарта.
+        parts = split_text(replace(message, attachments=[])) if message.text else []
+        extra = progress if progress is not None else []
+        for message_id in message_ids:
+            part = parts.pop(0) if parts else RelayMessage("")
+            try:
+                await self.bot.edit_message_text(
+                    chat_id=self.account.inbox_chat_id,
+                    message_id=message_id,
+                    text=part.text or "·",
+                    entities=media.entities(part.entities),
+                    parse_mode=None,
+                )
+            except TelegramBadRequest as exc:
+                if "message is not modified" in exc.message.lower():
+                    continue
+                if "no text" not in exc.message.lower():
+                    raise
+                # Подпись >1024 целиком остаётся отдельным текстом после медиа.
+                caption = part
+                if media.utf16_length(part.text) > 1024:
+                    parts.insert(0, part)
+                    caption = RelayMessage("")
+                try:
+                    await self.bot.edit_message_caption(
+                        chat_id=self.account.inbox_chat_id,
+                        message_id=message_id,
+                        caption=caption.text,
+                        caption_entities=media.entities(caption.entities),
+                        parse_mode=None,
+                    )
+                except TelegramBadRequest as caption_error:
+                    if "message is not modified" in caption_error.message.lower():
+                        continue
+                    if "can't be edited" not in caption_error.message.lower():
+                        raise
+                    if caption.text:
+                        parts.insert(0, caption)
+        for index, part in enumerate(parts):
+            if index < len(extra):
+                continue
+            sent = await self.bot.send_message(
+                chat_id=self.account.inbox_chat_id,
+                message_thread_id=topic_id,
+                text=part.text,
+                entities=media.entities(part.entities),
+                parse_mode=None,
+            )
+            extra.append(sent.message_id)
+        return list(message_ids) + extra
+
     async def start(self):
+        await self.bot.get_me()
+        if self.on_polling_started:
+            await self.on_polling_started()
         await self.dispatcher.start_polling(
-            self.bot, handle_signals=False, allowed_updates=["message", "edited_message"]
+            self.bot,
+            handle_signals=False,
+            handle_as_tasks=False,
+            close_bot_session=False,
+            allowed_updates=["message", "edited_message"],
         )
 
     async def stop(self):

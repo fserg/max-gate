@@ -5,11 +5,14 @@ class SmsCodeProvider:
     def __init__(self, timeout: float = 60):
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.requested = asyncio.Event()
+        self.on_requested = None
         self.timeout = timeout
 
     async def get_code(self, phone: str) -> str:
         self.requested.set()
         try:
+            if self.on_requested:
+                await self.on_requested()
             return await asyncio.wait_for(self.queue.get(), self.timeout)
         finally:
             self.requested.clear()
@@ -19,11 +22,14 @@ class PasswordProvider:
     def __init__(self, timeout: float = 60):
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.requested = asyncio.Event()
+        self.on_requested = None
         self.timeout = timeout
 
     async def get_password(self, hint: str | None = None) -> str:
         self.requested.set()
         try:
+            if self.on_requested:
+                await self.on_requested()
             return await asyncio.wait_for(self.queue.get(), self.timeout)
         finally:
             self.requested.clear()

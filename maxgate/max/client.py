@@ -5,11 +5,44 @@ from pathlib import Path
 from aiohttp import ClientError
 from pymax import Client, File, Photo, Video, Voice
 from pymax.config import ExtraConfig
+from pymax.exceptions import ApiError
 from pymax.versions.catalog import VersionCatalog
 
 from maxgate.domain import Attachment, RelayMessage, escape_max
 from maxgate.max.media import download
 from maxgate.max.providers import PasswordProvider, SavedSessionOnly, SmsCodeProvider
+
+
+class SessionLost(RuntimeError):
+    pass
+
+
+def is_session_lost(exc):
+    return isinstance(exc, SessionLost) or (
+        isinstance(exc, ApiError)
+        and any(
+            code in (exc.error, exc.message) for code in ("FAIL_LOGIN_TOKEN", "FAIL_LOGOUT_ALL")
+        )
+    )
+
+
+class GateClient(Client):
+    """PyMax 2.4.1: прерывает цикл start при отзыве Session и relogin=False."""
+
+    def _build_app(self):
+        app = super()._build_app()
+        start = app.start
+
+        async def guarded_start():
+            try:
+                return await start()
+            except ApiError as exc:
+                if is_session_lost(exc):
+                    raise SessionLost("Session MAX revoked") from None
+                raise
+
+        app.start = guarded_start
+        return app
 
 
 class MaxClient:
@@ -37,7 +70,7 @@ class MaxClient:
         catalog.remote = False  # каталог уже загружен для этого запуска
         version = app_version or max(catalog.versions, key=lambda v: tuple(map(int, v.split("."))))
         sms, password = SmsCodeProvider(), PasswordProvider()
-        client = Client(
+        client = GateClient(
             phone=phone,
             work_dir=str(data_dir),
             app_version=version,
@@ -92,6 +125,27 @@ class MaxClient:
                 await self.task
             self.task = None
         self.ready.clear()
+
+    @property
+    def me_id(self):
+        me = self.client.me
+        return me.contact.id if me else None
+
+    async def get_chat(self, chat_id):
+        return await self.client.get_chat(chat_id)
+
+    async def user_name(self, user_id):
+        if user_id is None:
+            return "?"
+        user = await self.client.get_user(user_id)
+        if user:
+            for name in user.names or []:
+                display = name.name or " ".join(n for n in (name.first_name, name.last_name) if n)
+                if display:
+                    return display
+            if user.phone:
+                return user.phone
+        return f"MAX {user_id}"
 
     async def fetch_chats(self):
         return await self.client.fetch_chats()
