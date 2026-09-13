@@ -7,9 +7,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from maxgate.domain import RelayMessage, join_text, render, utf16_length
-from maxgate.max.media import MediaTooLarge
+from maxgate.max.media import AttachmentUnavailable, MediaTooLarge
 from maxgate.max.messages import from_max
-from maxgate.relay.errors import max_api_error, reason, thread_missing
+from maxgate.relay.errors import max_api_error, permanent_max_error, reason, thread_missing
 from maxgate.relay.queue import ChatQueues, Job
 from maxgate.relay.storage import RelayStorage
 from maxgate.tg.topics import ensure_topic
@@ -198,6 +198,19 @@ class RelayEngine:
                         ),
                     )
                     continue
+                except Exception as exc:
+                    if isinstance(exc, AttachmentUnavailable):
+                        detail = "нет URL"
+                    elif permanent_max_error(exc):
+                        detail = max_api_error(exc).error
+                    else:
+                        raise
+                    relay = replace(
+                        relay,
+                        text=relay.text
+                        + f"\nℹ️ Файл {attachment.name or 'без имени'}: нет доступа ({detail})",
+                    )
+                    continue
                 attachments.append(replace(attachment, source=dest))
             relay = replace(relay, attachments=attachments)
             sent = await self._send(link, relay, progress)
@@ -365,7 +378,13 @@ class RelayEngine:
             for message in state["messages"]:
                 progress = state.setdefault(message.id, {})
                 if not progress.get("done"):
-                    await self.max_to_tg(link, message, progress, history=True, timestamp=True)
+
+                    async def relay_one(message=message, progress=progress):
+                        await self.max_to_tg(link, message, progress, history=True, timestamp=True)
+
+                    # Stay in this ChatLink's worker so live events cannot overtake history.
+                    # Each message gets independent retries and a final failure Note.
+                    await self.queues.execute(self._job(link, relay_one))
                     progress["done"] = True
 
         self._submit(link, run)

@@ -6,6 +6,10 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 
 
+class AttachmentUnavailable(ValueError):
+    """MAX returned no downloadable URL for this attachment."""
+
+
 class MediaTooLarge(ValueError):
     def __init__(self, size):
         self.size = size

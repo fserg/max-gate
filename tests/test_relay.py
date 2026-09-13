@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
 
+import pytest
 import pytest_asyncio
 from pymax import Message
 from sqlalchemy import select
@@ -816,3 +817,142 @@ async def test_reaction_selector_transport_error_does_not_claim_unsupported(rela
     relay.max.remove_reaction.assert_not_called()
     relay.tg.note.assert_awaited_once()
     assert relay.tg.note.call_args.args[0] == "⛔ не удалось изменить реакцию в MAX"
+
+
+@pytest.mark.parametrize("permanent", [True, False])
+async def test_history_continues_after_failure_before_live_events(relay, permanent):
+    from pymax.exceptions import ApiError
+
+    link = await relay._link(10)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def fetch(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return [max_message(n).model_copy(update={"text": str(n)}) for n in (3, 2, 1)]
+
+    relay.max.fetch_history.side_effect = fetch
+    send = relay.tg.send
+    attempts = {"2": 0, "3": 0}
+
+    async def reject_one(topic, message, **kwargs):
+        number = message.text[-1:]
+        if number in attempts:
+            attempts[number] += 1
+            if number == "2":
+                if permanent:
+                    raise ApiError(opcode=64, error="error.message.invalid")
+                raise TimeoutError()
+            if attempts[number] < 3:
+                raise TimeoutError()
+        return await send(topic, message, **kwargs)
+
+    relay.tg.send = reject_one
+    await relay.history(link, 50)
+    await asyncio.wait_for(entered.wait(), 1)
+    try:
+        await relay.accept_max(max_message(4).model_copy(update={"text": "4"}))
+    finally:
+        release.set()
+    await relay.queues.drain()
+    assert [r.max_message_id for r in await relay.store.messages(link.id)] == [1, 3, 4]
+    assert attempts == {"2": 1 if permanent else 3, "3": 3}
+    delivered = [message for _, message in relay.tg.sent]
+    assert len(delivered) == 4
+    assert delivered[0].text.endswith("1")
+    assert delivered[1].text.startswith("ℹ️ ")
+    assert delivered[2].text.endswith("3")
+    assert delivered[3].text.endswith("4")
+    relay.max.fetch_history.assert_awaited_once_with(10, backward=50)
+
+
+@pytest.mark.parametrize("unnamed_only", [False, True])
+@pytest.mark.parametrize("mode", ["live", "catch_up", "history"])
+@pytest.mark.parametrize("failure", ["permanent", "wrapped", "no_url"])
+async def test_inaccessible_attachment_preserves_message_and_other_media(
+    relay, mode, failure, unnamed_only
+):
+    from pymax.exceptions import ApiError
+
+    from maxgate.max.client import MaxClient
+
+    link = await relay._link(10)
+    relay.max.chat.last_event_time = 2000
+    message = max_message(
+        attaches=[
+            {"_type": "FILE", "fileId": 1, "name": "denied.bin", "size": 1, "token": "fake"},
+            {"_type": "FILE", "fileId": 2, "name": "ok.bin", "size": 1, "token": "fake"},
+        ]
+    )
+
+    if unnamed_only:
+        message.attaches = message.attaches[:1]
+        message.attaches[0].name = None
+
+    async def download(chat, msg, source, dest):
+        if source.file_id == 1:
+            if failure == "no_url":
+                adapter = NS(client=NS(get_file_by_id=AsyncMock(return_value=None)))
+                return await MaxClient.download_attachment(adapter, chat, msg, source, dest)
+            error = ApiError(opcode=88, error="error.user.file.access")
+            if failure == "wrapped":
+                raise RuntimeError("wrapped") from error
+            raise error
+        dest.write_bytes(b"ok")
+
+    relay.max.download_attachment.side_effect = download
+    relay.max.fetch_history.return_value = [message]
+    if mode == "live":
+        await relay.accept_max(message)
+    elif mode == "catch_up":
+        await relay.catch_up()
+    else:
+        await relay.history(link, 50)
+    await relay.queues.drain()
+    assert relay.max.download_attachment.await_count == (1 if unnamed_only else 2)
+    assert len(relay.tg.sent) == 1
+    delivered = relay.tg.sent[0][1]
+    assert "hello" in delivered.text
+    detail = "нет URL" if failure == "no_url" else "error.user.file.access"
+    name = "без имени" if unnamed_only else "denied.bin"
+    assert f"ℹ️ Файл {name}: нет доступа ({detail})" in delivered.text
+    assert [a.name for a in delivered.attachments] == ([] if unnamed_only else ["ok.bin"])
+    assert [r.max_message_id for r in await relay.store.messages(link.id)] == [1]
+    assert list(relay.tmp.iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["timeout", "transport", "api_timeout", "other_value_error"])
+async def test_attachment_transient_failure_still_retries(relay, failure):
+    from aiohttp import ClientConnectionError
+    from pymax.exceptions import ApiError
+
+    errors = {
+        "timeout": TimeoutError(),
+        "transport": ClientConnectionError(),
+        "api_timeout": ApiError(opcode=88, error="error.request.timeout"),
+        "other_value_error": ValueError("unrelated download error"),
+    }
+    attempts = 0
+
+    async def download(chat, msg, source, dest):
+        nonlocal attempts
+        attempts += 1
+        dest.write_bytes(b"partial" if attempts < 3 else b"ok")
+        if attempts < 3:
+            raise errors[failure]
+
+    relay.max.download_attachment.side_effect = download
+    await relay.accept_max(
+        max_message(
+            attaches=[
+                {"_type": "FILE", "fileId": 1, "name": "retry.bin", "size": 1, "token": "fake"},
+            ]
+        )
+    )
+    await relay.queues.drain()
+    assert attempts == 3
+    assert len(relay.tg.sent) == 1
+    message = relay.tg.sent[0][1]
+    assert message.text == "Sender\nhello"
+    assert [a.name for a in message.attachments] == ["retry.bin"]
+    assert list(relay.tmp.iterdir()) == []

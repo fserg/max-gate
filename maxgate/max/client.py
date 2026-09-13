@@ -10,7 +10,7 @@ from pymax.versions.catalog import VersionCatalog
 
 from maxgate.diagnostics import route_pymax_logging
 from maxgate.domain import Attachment, RelayMessage, max_elements
-from maxgate.max.media import download
+from maxgate.max.media import AttachmentUnavailable, download
 from maxgate.max.plaintext import GateMessageService
 from maxgate.max.providers import PasswordProvider, SavedSessionOnly, SmsCodeProvider
 from maxgate.max.uploads import GateUploadService
@@ -171,6 +171,8 @@ class MaxClient:
 
     async def download_attachment(self, chat_id, message_id, attachment, dest: Path):
         if isinstance(attachment, str):
+            if not attachment:
+                raise AttachmentUnavailable("Attachment has no downloadable URL")
             return await download(attachment, dest)
         kind = attachment.type
         if kind == "FILE":
@@ -188,7 +190,7 @@ class MaxClient:
             if kind == "STICKER":
                 url = getattr(attachment, "lottie_url", None) or url
         if not url:
-            raise ValueError("Attachment has no downloadable URL")
+            raise AttachmentUnavailable("Attachment has no downloadable URL")
         return await download(url, dest)
 
     async def send(self, chat_id: int, message: RelayMessage):
