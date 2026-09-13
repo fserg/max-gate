@@ -108,3 +108,30 @@ async def test_download_redirect_uses_default_trust_for_external_host(monkeypatc
     assert isinstance(http.calls[0][1]["ssl"], ssl.SSLContext)
     assert http.calls[1][1]["ssl"] is True
     assert all(not call[1]["allow_redirects"] for call in http.calls)
+
+
+async def test_reaction_adapter_uses_real_pymax_payload():
+    from pymax.api.messages.service import MessageService
+    from pymax.protocol import Opcode
+
+    app = SimpleNamespace(
+        invoke=AsyncMock(
+            return_value=SimpleNamespace(payload={"reactionInfo": {"yourReaction": "👍"}})
+        )
+    )
+    service = MessageService(app)
+    client = SimpleNamespace(
+        on_start=lambda: lambda fn: fn,
+        add_reaction=service.add_reaction,
+        remove_reaction=service.remove_reaction,
+    )
+    adapter = MaxClient(client)
+    await adapter.add_reaction(10, 20, "👍")
+    opcode, payload = app.invoke.call_args.args
+    assert opcode == Opcode.MSG_REACTION
+    assert payload["reaction"] == {"reactionType": "EMOJI", "id": "👍"}
+    # ReactionInfoPayload deliberately has no enum; only MAX can accept/reject an emoji.
+    await adapter.add_reaction(10, 20, "🧪")
+    assert app.invoke.call_args.args[1]["reaction"]["id"] == "🧪"
+    await adapter.remove_reaction(10, 20)
+    assert app.invoke.call_args.args[0] == Opcode.MSG_CANCEL_REACTION

@@ -199,3 +199,34 @@ async def test_start_cannot_rebind_existing_inbox(storage):
     assert account.inbox_chat_id == 10
     assert (await store.chat(link_id=link.id)).topic_id == 2
     assert len(await store.messages(link.id)) == 1
+
+
+async def test_reactions_owner_inbox_filter_and_polling_subscription(storage):
+    from aiogram.types import MessageReactionUpdated
+
+    _, sessions, _ = storage
+    bot = SimpleNamespace(get_me=AsyncMock())
+    adapter = TgBot("", SimpleNamespace(owner_tg_user_id=1, inbox_chat_id=10), sessions, bot=bot)
+    adapter.on_reaction = AsyncMock()
+    reaction = MessageReactionUpdated(
+        chat={"id": 10, "type": "private"},
+        message_id=5,
+        date=datetime.now(UTC),
+        user={"id": 1, "is_bot": False, "first_name": "Owner"},
+        old_reaction=[],
+        new_reaction=[{"type": "emoji", "emoji": "👍"}],
+    )
+    await adapter._reaction(reaction)
+    await adapter._reaction(reaction.model_copy(update={"user": None}))
+    await adapter._reaction(
+        reaction.model_copy(update={"user": reaction.user.model_copy(update={"id": 2})})
+    )
+    await adapter._reaction(
+        reaction.model_copy(update={"chat": reaction.chat.model_copy(update={"id": 20})})
+    )
+    adapter.on_reaction.assert_awaited_once_with(reaction)
+    adapter.dispatcher.start_polling = AsyncMock()
+    await adapter.start()
+    assert (
+        "message_reaction" in adapter.dispatcher.start_polling.call_args.kwargs["allowed_updates"]
+    )

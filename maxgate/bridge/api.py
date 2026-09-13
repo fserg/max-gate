@@ -9,6 +9,8 @@ from sqlalchemy.exc import IntegrityError
 
 from maxgate.db.models import Account, AccountEvent
 from maxgate.relay.storage import RelayStorage
+from maxgate.tg.bot import TgBot
+from maxgate.tg.topics import ensure_topic
 
 
 class CreateAccount(BaseModel):
@@ -81,6 +83,7 @@ class InternalApi:
                 web.post("/accounts/{id}/login/password", self.credential),
                 web.get("/accounts/{id}/events", self.events),
                 web.get("/accounts/{id}/chats", self.chats),
+                web.post("/accounts/{id}/chats/{link_id}/topic", self.topic),
                 web.post("/accounts/{id}/chats/{link_id}/{action:mute|unmute}", self.mute),
                 web.post("/accounts/{id}/{action:login|pause|resume|logout}", self.action),
             ]
@@ -201,6 +204,24 @@ class InternalApi:
         account = await self._account(request)
         storage = RelayStorage(account.id, self.supervisor.sessions)
         return web.json_response([chat_json(link) for link in await storage.chats()])
+
+    async def topic(self, request):
+        account_id = int(request.match_info["id"])
+        async with self.supervisor.lock(account_id):
+            account = await self._account(request)
+            store = RelayStorage(account.id, self.supervisor.sessions)
+            link = await store.chat(link_id=int(request.match_info["link_id"]))
+            if link is None:
+                raise web.HTTPNotFound(text="ChatLink not found")
+            if account.inbox_chat_id is None:
+                raise web.HTTPPreconditionFailed(text="Bind Inbox with /start first")
+            bot = self.bot_factory(self.supervisor.crypto.decrypt(account.tg_bot_token_enc))
+            try:
+                tg = TgBot("", account, self.supervisor.sessions, bot=bot)
+                link = await ensure_topic(store, tg, link.id, self.supervisor.topic_locks)
+            finally:
+                await bot.session.close()
+            return web.json_response(chat_json(link))
 
     async def mute(self, request):
         account = await self._account(request)

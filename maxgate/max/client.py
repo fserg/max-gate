@@ -228,3 +228,9 @@ class MaxClient:
 
     async def edit(self, chat_id: int, message_id: int, text: str):
         return await self.client.edit_message(chat_id, message_id, text=text)
+
+    async def add_reaction(self, chat_id, message_id, emoji):
+        return await self.client.add_reaction(chat_id, message_id, emoji)
+
+    async def remove_reaction(self, chat_id, message_id):
+        return await self.client.remove_reaction(chat_id, message_id)

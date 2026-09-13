@@ -12,6 +12,7 @@ from maxgate.max.messages import from_max
 from maxgate.relay.errors import reason, thread_missing
 from maxgate.relay.queue import ChatQueues, Job
 from maxgate.relay.storage import RelayStorage
+from maxgate.tg.topics import ensure_topic
 
 
 class RelayEngine:
@@ -41,6 +42,7 @@ class RelayEngine:
         if account.inbox_chat_id is not None:
             self.inbox_ready.set()
         self.ingest_lock = asyncio.Lock()
+        self.topic_locks = {}
         self.albums = {}
         self.album_captions = {}
         self.chats = {}
@@ -85,10 +87,7 @@ class RelayEngine:
             return False
 
     async def _topic(self, link):
-        if link.topic_id is None:
-            topic_id = await self.tg.create_topic(link.max_title or "MAX", link.max_chat_type)
-            link = await self.store.change_chat(link.id, topic_id=topic_id)
-        return link
+        return await ensure_topic(self.store, self.tg, link.id, self.topic_locks)
 
     async def _send(self, link, message, progress):
         link = await self.store.chat(link_id=link.id)
@@ -154,7 +153,7 @@ class RelayEngine:
         if not history and not self._allowed(link):
             return
         existing = await self.store.messages(link.id, max_id=message.id)
-        if existing and not history and not progress.get("sent"):
+        if existing and not progress.get("sent"):
             return  # MessageLink покрывает Echo и повторные события/Catch-up.
         sender = await self.max.user_name(message.sender) if message.sender is not None else "?"
         relay = render(
@@ -210,14 +209,14 @@ class RelayEngine:
             [m.message_id for m in sent],
             history,
         )
+        await self.store.link_messages(
+            link.id, message.id, [m.message_id for m in sent], "max_to_tg"
+        )
         if not history:
-            await self.store.link_messages(
-                link.id, message.id, [m.message_id for m in sent], "max_to_tg"
-            )
             await self.store.change_chat(link.id, last_relayed_time=message.time)
-            self.attachment_signatures[message.id] = self._signature(message)
-            if len(self.attachment_signatures) > 1000:
-                self.attachment_signatures.pop(next(iter(self.attachment_signatures)))
+        self.attachment_signatures[message.id] = self._signature(message)
+        if len(self.attachment_signatures) > 1000:
+            self.attachment_signatures.pop(next(iter(self.attachment_signatures)))
 
     @staticmethod
     def _signature(message):
@@ -478,6 +477,42 @@ class RelayEngine:
 
             self._submit(link, run, reply_to=message.message_id, direction="tg_to_max")
 
+    async def tg_reaction(self, event):
+        if self.closed:
+            return
+        async with self.ingest_lock:
+            row = await self.store.message_by_tg(event.message_id)
+            if row is None:
+                await self.tg.note("⛔ сообщение не связано с MAX", reply_to=event.message_id)
+                return
+            link = await self.store.chat(link_id=row.chat_link_id)
+            if link is None or link.topic_id is None:
+                await self.tg.note("⛔ Topic не связан с MAX", reply_to=event.message_id)
+                return
+
+            async def failed(exc):
+                await self.event(f"Reaction failed: {reason(exc)}", "WARNING")
+                await self.tg.note(
+                    "⛔ не удалось изменить реакцию в MAX",
+                    topic_id=link.topic_id,
+                    reply_to=event.message_id,
+                )
+
+            async def run():
+                # MAX keeps one reaction per user. Preserve emoji exactly; server validates it.
+                if len(event.new_reaction) > 1 or any(
+                    r.type != "emoji" for r in event.new_reaction
+                ):
+                    raise ValueError("MAX supports one ordinary emoji reaction")
+                if event.new_reaction:
+                    await self.max.add_reaction(
+                        link.max_chat_id, row.max_message_id, event.new_reaction[0].emoji
+                    )
+                else:
+                    await self.max.remove_reaction(link.max_chat_id, row.max_message_id)
+
+            self.queues.submit(link.id, Job(run, failed, "tg_to_max"))
+
     async def chat_update(self, chat):
         if self.closed:
             return
@@ -525,9 +560,11 @@ class RelayEngine:
             await self.note(link, "Muted" if command == "/mute" else "Relay включён")
         elif command == "/history":
             try:
-                count = int(parts[1]) if len(parts) > 1 else 20
+                count = int(parts[1]) if len(parts) == 2 else 0
+                if count < 1:
+                    raise ValueError
             except ValueError:
-                await self.note(link, "Использование: /history N (1–100)")
+                await self.note(link, "укажите число сообщений")
                 return True
             await self.history(link, count)
         elif command == "/info":

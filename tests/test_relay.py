@@ -244,7 +244,7 @@ async def test_inbox_expiry_and_release(relay):
     assert len(relay.tg.sent) == 1
 
 
-async def test_catchup_initial_skip_then_limit_and_history_no_links(relay):
+async def test_catchup_initial_skip_then_limit_and_history_links(relay):
     await relay.catch_up()
     await relay.queues.drain()
     relay.max.fetch_history.assert_not_called()
@@ -262,7 +262,7 @@ async def test_catchup_initial_skip_then_limit_and_history_no_links(relay):
     await relay.history(link, 200)
     await relay.queues.drain()
     assert relay.max.fetch_history.call_args.kwargs == {"backward": 100}
-    assert await relay.store.messages(link.id, max_id=1000) == []
+    assert len(await relay.store.messages(link.id, max_id=1000)) == 1
 
 
 async def test_edits_deletes_and_owner_rename(relay):
@@ -523,3 +523,77 @@ async def test_shutdown_tg_jobs_notify_owner(relay, caplog):
     assert sorted(m.reply_to for _, m in relay.tg.sent) == [100, 101]
     assert all(m.text.startswith("❌") for _, m in relay.tg.sent)
     assert "lost 2 jobs direction=tg_to_max" in caplog.text
+
+
+async def test_history_requires_count_links_dedup_and_reply_edit_delete(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200, muted=True)
+    for text in ["/history", "/history nope", "/history 0", "/history -1"]:
+        command = tg_message()
+        command.text = text
+        await relay.command(command)
+        assert relay.tg.sent[-1][1].text == "укажите число сообщений"
+    relay.max.fetch_history.assert_not_called()
+    relay.max.fetch_history.return_value = [max_message(123)]
+    command.text = "/history 200"
+    await relay.command(command)
+    await relay.queues.drain()
+    assert relay.max.fetch_history.call_args.kwargs == {"backward": 100}
+    rows = await relay.store.messages(link.id, max_id=123)
+    assert len(rows) == 1 and rows[0].direction == "max_to_tg"
+    assert relay.tg.sent[-1][1].text.startswith("[01.01")
+    assert (await relay.store.chat(link_id=link.id)).last_relayed_time == 0
+    sent = len(relay.tg.sent)
+    await relay.command(command)
+    await relay.queues.drain()
+    assert len(relay.tg.sent) == sent
+    await relay.accept_tg(tg_message(999), RelayMessage("reply", reply_to=rows[0].tg_message_id))
+    await relay.max_edit(max_message(123).model_copy(update={"text": "changed"}))
+    await relay.max_delete(NS(chat_id=10, message_ids=[123]))
+    await relay.queues.drain()
+    assert relay.max.send.call_args.args[1].reply_to == 123
+    assert relay.tg.edit_parts.await_count == 2
+
+
+async def test_reaction_add_replace_remove_and_unknown_link(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "max_to_tg")
+    relay.max.add_reaction = AsyncMock()
+    relay.max.remove_reaction = AsyncMock()
+    for emoji in ["👍", "❤", None]:
+        await relay.tg_reaction(
+            NS(message_id=100, new_reaction=[NS(type="emoji", emoji=emoji)] if emoji else [])
+        )
+    await relay.queues.drain()
+    assert [c.args for c in relay.max.add_reaction.call_args_list] == [
+        (10, 123, "👍"),
+        (10, 123, "❤"),
+    ]
+    relay.max.remove_reaction.assert_awaited_once_with(10, 123)
+    await relay.tg_reaction(NS(message_id=404, new_reaction=[]))
+    relay.tg.note.assert_awaited_once_with("⛔ сообщение не связано с MAX", reply_to=404)
+
+
+async def test_reaction_error_sends_one_note(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "tg_to_max")
+    relay.max.add_reaction = AsyncMock(side_effect=ValueError("unsupported"))
+    await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="emoji", emoji="🧪")]))
+    await relay.queues.drain()
+    assert relay.max.add_reaction.await_count == 3
+    relay.tg.note.assert_awaited_once()
+    assert relay.tg.note.call_args.args[0].startswith("⛔")
+    assert relay.tg.note.call_args.kwargs == dict(topic_id=200, reply_to=100)
+
+
+async def test_reaction_custom_emoji_rejected_without_max(relay):
+    link = await relay._link(10)
+    await relay.store.change_chat(link.id, topic_id=200)
+    await relay.store.link_messages(link.id, 123, [100], "max_to_tg")
+    relay.max.add_reaction = AsyncMock()
+    await relay.tg_reaction(NS(message_id=100, new_reaction=[NS(type="custom_emoji")]))
+    await relay.queues.drain()
+    relay.max.add_reaction.assert_not_called()
+    relay.tg.note.assert_awaited_once()

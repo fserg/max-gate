@@ -76,6 +76,19 @@ class RelayStorage:
         async with self.sessions() as session:
             return list(await session.scalars(query.order_by(MessageLink.part, MessageLink.id)))
 
+    async def message_by_tg(self, message_id):
+        async with self.sessions() as session:
+            return await session.scalar(
+                select(MessageLink)
+                .where(
+                    MessageLink.account_id == self.account_id,
+                    MessageLink.tg_message_id == message_id,
+                    MessageLink.created_at >= utcnow() - timedelta(days=90),
+                )
+                .order_by(MessageLink.id)
+                .limit(1)
+            )
+
     async def link_messages(self, link_id, max_id, tg_ids, direction):
         async with self.sessions.begin() as session:
             existing = set(

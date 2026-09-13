@@ -27,6 +27,7 @@ class TgBot:
         self.on_inbox_bound = None
         self.on_polling_started = None
         self.on_edit = None
+        self.on_reaction = None
         self.on_topic_edited = None
         self._pending_titles: dict[int, str] = {}
         self.dispatcher.message.outer_middleware(self._owner_only)
@@ -34,6 +35,7 @@ class TgBot:
         self.dispatcher.message.register(self._start, CommandStart())
         self.dispatcher.message.register(self._message)
         self.dispatcher.edited_message.register(self._edited_message)
+        self.dispatcher.message_reaction.register(self._reaction)
 
     async def _owner_only(self, handler, event: Message, data):
         if not event.from_user or event.from_user.id != self.account.owner_tg_user_id:
@@ -122,6 +124,16 @@ class TgBot:
     async def _edited_message(self, message: Message):
         if self._in_inbox(message) and message.message_thread_id and self.on_edit:
             await self.on_edit(message, from_telegram(message))
+
+    async def _reaction(self, event):
+        # Reaction updates have user (not from_user) and no message_thread_id.
+        if (
+            self._in_inbox(event)
+            and event.user
+            and event.user.id == self.account.owner_tg_user_id
+            and self.on_reaction
+        ):
+            await self.on_reaction(event)
 
     async def create_topic(self, title: str, chat_type: str) -> int:
         topic = await self.bot.create_forum_topic(
@@ -222,7 +234,7 @@ class TgBot:
             handle_signals=False,
             handle_as_tasks=False,
             close_bot_session=False,
-            allowed_updates=["message", "edited_message"],
+            allowed_updates=["message", "edited_message", "message_reaction"],
         )
 
     async def stop(self):

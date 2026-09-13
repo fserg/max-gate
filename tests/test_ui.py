@@ -201,3 +201,26 @@ def test_ui_password_preserves_spaces(ui, value):
     app.text_input(key="credential_value_1_password").set_value(value)
     next(b for b in app.button if b.label == "Отправить пароль").click().run()
     assert api.calls[-1] == ("POST", "/accounts/1/login/password", {"password": value})
+
+
+@pytest.mark.parametrize("bound", [True, False])
+def test_create_topic_button_and_inbox_guidance(ui, bound):
+    app, api = ui
+    original_get = api.get
+
+    def get(path):
+        data = original_get(path)
+        if path.endswith("/chats"):
+            data[0]["topic_id"] = None
+        return data
+
+    api.get = get
+    if not bound:
+        api.account["inbox_chat_id"] = None
+    sign_in(app)
+    app.button(key="topic_1").click().run()
+    if bound:
+        assert api.calls[-1] == ("POST", "/accounts/1/chats/1/topic", None)
+    else:
+        assert not api.calls
+        assert any("подключите Inbox" in e.value for e in app.error)

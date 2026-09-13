@@ -96,6 +96,8 @@ class AccountRunner:
             self.relay = RelayEngine(
                 self.account, self.sessions, self.max, self.tg, self.settings.data_dir, self.event
             )
+            self.relay.topic_locks = getattr(self, "topic_locks", {})
+            self.tg.on_reaction = self.relay.tg_reaction
             self.max.sms.on_requested = self._sms_requested
             self.max.password.on_requested = self._password_requested
             self.tg.on_message = self.relay.accept_tg

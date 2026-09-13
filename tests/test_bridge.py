@@ -323,3 +323,42 @@ async def test_runner_credentials_are_exact(storage, tmp_path, kind, value, expe
     provider.requested.set()
     await runner.provide(kind, value)
     assert provider.queue.get_nowait() == expected
+
+
+async def test_topic_endpoint_bound_inbox_idempotency_and_scope(storage, tmp_path):
+    from maxgate.db.models import Account
+    from maxgate.tg.bot import TgBot
+    from maxgate.tg.topics import ensure_topic
+
+    _, sessions, crypto = storage
+    supervisor = Supervisor(sessions, crypto, NS(data_dir=tmp_path))
+    store = RelayStorage(1, sessions)
+    link = await store.ensure_chat(10, "CHAT", "Group", 0)
+    bot = NS(
+        create_forum_topic=AsyncMock(return_value=NS(message_thread_id=77)),
+        session=NS(close=AsyncMock()),
+    )
+    api = InternalApi(supervisor, "fake", bot_factory=lambda _: bot)
+    req = NS(match_info={"id": "1", "link_id": str(link.id)})
+    with pytest.raises(web.HTTPPreconditionFailed):
+        await api.topic(req)
+    bot.create_forum_topic.assert_not_called()
+    async with sessions.begin() as session:
+        account = await session.get(Account, 1)
+        account.inbox_chat_id = 1
+    # Operator requests and automatic creation use the same lock and implementation.
+    tg = TgBot("", account, sessions, bot=bot)
+    results = await asyncio.gather(
+        api.topic(req), api.topic(req), ensure_topic(store, tg, link.id, supervisor.topic_locks)
+    )
+    assert json.loads(results[0].text)["topic_id"] == 77
+    assert json.loads(results[1].text)["topic_id"] == 77
+    assert results[2].topic_id == 77
+    bot.create_forum_topic.assert_awaited_once_with(chat_id=1, name="Group", icon_color=0x6FB9F0)
+    with pytest.raises(web.HTTPNotFound):
+        await api.topic(NS(match_info={"id": "2", "link_id": str(link.id)}))
+    assert any(
+        str(r.resource) == "<DynamicResource  /accounts/{id}/chats/{link_id}/topic>"
+        for r in api.app.router.routes()
+    )
+    await supervisor.close()

@@ -20,6 +20,7 @@ class Supervisor:
         self.runner_factory, self.sleep = runner_factory, sleep
         self.runners, self.tasks = {}, {}
         self.locks = {}
+        self.topic_locks = {}
         self.closed = False
         self.maintenance_task = None
 
@@ -49,6 +50,7 @@ class Supervisor:
             runner = self.runner_factory(
                 account, self.sessions, self.crypto, self.settings, login=login
             )
+            runner.topic_locks = self.topic_locks
             self.runners[account_id] = runner
             try:
                 await runner.run()

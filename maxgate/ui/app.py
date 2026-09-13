@@ -220,11 +220,17 @@ def chat_links(client, account, chats):
         st.info("ChatLink появятся после первого входа в MAX")
         return
     for link in chats:
-        label, action = st.columns([5, 1])
+        label, topic, action = st.columns([5, 2, 1])
         label.write(
             f"**{link['max_title'] or link['max_chat_id']}** · {link['max_chat_type']} · "
             f"Topic {link['topic_id'] or 'не создан'}" + (" · Muted" if link["muted"] else "")
         )
+        with topic:
+            if link["topic_id"] is None and st.button("Создать Topic", key=f"topic_{link['id']}"):
+                if account["inbox_chat_id"] is None:
+                    st.error("Сначала подключите Inbox: Owner должен отправить /start боту.")
+                else:
+                    invoke(client, "POST", f"/accounts/{account['id']}/chats/{link['id']}/topic")
         with action:
             if st.button("Unmute" if link["muted"] else "Mute", key=f"mute_{link['id']}"):
                 verb = "unmute" if link["muted"] else "mute"
