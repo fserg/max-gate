@@ -2,6 +2,7 @@
 name = "maxgate"
 version = "0.1.0"
 description = "MAX ↔ Telegram Gate"
+license = "AGPL-3.0-only"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "maxapi-python==2.4.1",
