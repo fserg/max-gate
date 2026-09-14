@@ -25,7 +25,7 @@ CSS = """
 .stApp,.stApp p,.stApp h1,.stApp h3,.stApp label {font-family:Inter,system-ui,sans-serif!important}
 .stApp p {font-size:14px!important}
 .stApp [data-testid="stCaptionContainer"] p {font-size:13px!important;color:#71717a}
-.stElementContainer:has(style):not(:has(iframe)) {display:none}
+.stElementContainer:has(> [data-testid="stMarkdown"] style) {display:none}
 [class*="st-key-field_"] {gap:6px!important}
 .stApp [data-testid="stHeadingWithActionElements"] a {display:none}
 [class*="st-key-account_row_"] [data-testid="stHorizontalBlock"] {flex-wrap:nowrap;align-items:center;gap:8px}
@@ -34,18 +34,6 @@ CSS = """
 [class*="st-key-account_row_"] [data-testid="stColumn"]:last-child {flex:0 0 auto!important;width:auto!important}
 .st-key-topbar {height:56px}
 [data-testid="stLayoutWrapper"]:has(> .st-key-topbar) {position:sticky;top:0;z-index:99;background:white}
-/* Radix renders its dialog in a fixed portal, so automatic iframe height is zero. */
-/* Move the library's Show Dialog trigger above the clipped layer. Increasing
-   the iframe by twice the offset keeps the Radix dialog centered in the viewport. */
-[class*="st-key-st-key-dialog_layer_"] {overflow:hidden!important}
-[class*="st-key-st-key-dialog_layer_"] iframe {
- height:calc(100vh + 80px)!important;width:100%!important;transform:translateY(-40px);
-}
-[class*="st-key-st-key-dialog_layer_"] [data-testid="stElementContainer"]:has(iframe) {
- position:absolute;inset:0;width:100%!important;height:100vh!important;
-}
-
-
 [data-testid="stAppViewContainer"] {background:white}
 header[data-testid="stHeader"] {display:none}
 .stMainBlockContainer {max-width:1040px;padding:0 16px 40px}
@@ -59,9 +47,6 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 .st-key-topbar {position:sticky;top:0;z-index:99;background:white;border-bottom:1px solid #e4e4e7;padding:9.5px 0;margin-bottom:12px}
 .st-key-topbar [data-testid="stHorizontalBlock"] {align-items:center;flex-wrap:nowrap}
 .st-key-topbar [data-testid="stColumn"] {min-width:0!important}
-.st-key-topbar [data-testid="stElementContainer"]:has(iframe),
-.st-key-topbar [data-testid="stElementContainer"]:has(iframe)>div {height:36px!important}
-.st-key-topbar iframe {height:36px!important;vertical-align:top}
 .st-key-topbar [data-testid="stMarkdownContainer"],.st-key-topbar p {margin:0!important}
 .brand {display:flex;align-items:center;gap:10px;font-size:18px;font-weight:600;white-space:nowrap}
 .logo {display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;background:#18181b;color:white;border-radius:7px;font-size:14px}
@@ -93,14 +78,15 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 .st-key-topbar [data-testid="stColumn"]:first-child {flex:1 1 auto!important;width:auto!important}
 .st-key-topbar [data-testid="stColumn"]:nth-child(2) {flex:0 0 auto!important;width:max-content!important;margin-left:auto}
 .st-key-topbar [data-testid="stColumn"]:last-child {flex:0 0 80px!important;width:80px!important}
+[class*="st-key-account_row_"] button p {white-space:pre-line;text-align:left}
 /* Keep chat actions together when the row wraps on narrow screens. */
 [class*="st-key-chat_row_"] {padding:12px 0;border-bottom:1px solid #f4f4f5}
 [data-testid="stLayoutWrapper"]:last-child > [class*="st-key-chat_row_"] {border-bottom:0}
 [class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {flex-wrap:wrap;align-items:center;gap:8px}
 [class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {flex:1 1 240px!important;min-width:0!important;width:auto!important;overflow-wrap:anywhere}
-[class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {flex:0 0 228px!important;min-width:0!important;width:228px!important;margin-left:auto}
+[class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {flex:0 0 244px!important;min-width:0!important;width:244px!important;margin-left:auto}
 [class*="st-key-chat_row_"] [data-testid="stColumn"]:last-child:not(:has([class*="st-key-topic_"],[class*="st-key-rename_"])) {flex-basis:86px!important;width:86px!important}
-[class*="st-key-chat_actions_"] > :is([class*="st-key-topic_"],[class*="st-key-rename_"]) {flex:0 0 134px!important;width:134px!important}
+[class*="st-key-chat_actions_"] > :is([class*="st-key-topic_"],[class*="st-key-rename_"]) {flex:0 0 150px!important;width:150px!important}
 [class*="st-key-chat_actions_"] > [class*="st-key-mute_"] {flex:0 0 86px!important;width:86px!important}
 [class*="st-key-chat_actions_"] {gap:8px!important;flex-wrap:nowrap!important;justify-content:flex-end}
 [class*="st-key-rename_form_actions_"] {gap:8px!important;flex-wrap:nowrap!important;justify-content:flex-end}
@@ -127,41 +113,19 @@ def badge(text, kind=""):
     return f'<span class="badge {escape(kind)}">{escape(str(text))}</span>'
 
 
-def button(text, key, *, disabled=False, variant="default", class_name="", **props):
-    # Enforce disabled in Python too: custom components can retain a click event.
-    event = st.session_state.get(key, {})
-    clicked = ui.button(
-        text,
-        key=key,
-        variant=variant,
-        disabled=disabled,
-        class_name="h-9 rounded-md " + class_name,
-        style={"maxWidth": "100%", **props.pop("style", {})},
-        **props,
-    )
-    # The frontend retains the last click across remounts. Library bookkeeping can
-    # briefly move back to its initial event_id; never treat that as a new click.
-    consumed = st.session_state.setdefault("consumed_button_events", {})
-    event_id = event.get("event_id")
-    if not clicked or not event.get("value") or consumed.get(key) == event_id:
-        return False
-    consumed[key] = event_id
-    return not disabled
-
-
-def confirmation_key(action, account_id):
-    generation = st.session_state.get(f"{action}_dialog_revision_{account_id}", 0)
-    base = f"{action}_{account_id}"
-    return f"{base}_{generation}" if generation else base
+def button(text, key, *, disabled=False, variant="default", width="content"):
+    with st.container(key=key):
+        clicked = ui.button(text, key=key, variant=variant, disabled=disabled, width=width)
+    return clicked and not disabled
 
 
 def field(label, key, default="", *, secret=False, placeholder=None):
     revision = st.session_state.get(f"revision_{key}", 0)
     widget_key = f"{key}_{revision}" if revision else key
     with st.container(key=f"field_{key}"):
-        st.markdown(escape(label))
         return ui.input(
-            default_value=str(default),
+            label,
+            value=str(default),
             type="password" if secret else "text",
             placeholder=placeholder or label,
             key=widget_key,
@@ -186,7 +150,7 @@ def login(settings):
         markup('<div class="brand"><span class="logo">↔</span>Max-gate</div>')
         st.caption("Вход для Operator")
         supplied = field("Пароль Operator", "operator_password", secret=True)
-        if button("Войти", "operator_login", class_name="w-full"):
+        if button("Войти", "operator_login", width="stretch"):
             clear_field("operator_password")
             if hmac.compare_digest(supplied.encode(), expected.encode()):
                 st.session_state["authenticated"] = password_fingerprint(expected)
@@ -320,14 +284,14 @@ def confirm_action(client, account_id, action, clicked, *, disabled=False):
     if disabled or not st.session_state.get(pending):
         return
     confirmed = ui.alert_dialog(
-        show=clicked,
+        show=True,
         title=titles[action],
         description=descriptions[action],
         confirm_label=titles[action],
         cancel_label="Отмена",
         key=key,
     )
-    if confirmed or (not clicked and not st.session_state.get(key, {}).get("open", False)):
+    if confirmed is not None:
         st.session_state.pop(pending, None)
         st.session_state[counter] = st.session_state.get(counter, 0) + 1
         if confirmed:
@@ -419,7 +383,7 @@ def account_settings(client, account, *, disabled=False):
                     "Сохранить настройки",
                     f"save_{account_id}",
                     disabled=disabled,
-                    class_name="w-full",
+                    width="stretch",
                 )
 
         columns = st.columns(4)
@@ -432,7 +396,7 @@ def account_settings(client, account, *, disabled=False):
         with columns[3]:
             st.markdown("Relay Channel")
             channels = ui.switch(
-                default_checked=account["relay_channels"],
+                value=account["relay_channels"],
                 label="Переносить Channel",
                 key=f"channels_{account_id}",
             )
@@ -457,9 +421,9 @@ def account_settings(client, account, *, disabled=False):
         with right:
             clicked = button(
                 "Удалить Account",
-                confirmation_key("delete", account_id),
-                variant="outline",
-                class_name="w-full text-red-600 border-red-200",
+                f"delete_{account_id}",
+                variant="destructive",
+                width="stretch",
                 disabled=disabled,
             )
         confirm_action(client, account_id, "delete", clicked, disabled=disabled)
@@ -620,7 +584,7 @@ def journal(events):
 def account_card(client, account, events, chats, *, disabled=False):
     account_id, state = account["id"], account["state"]
     path = f"/accounts/{account_id}"
-    if button("← Все Account", f"back_{account_id}", variant="ghost", class_name="text-zinc-500"):
+    if button("← Все Account", f"back_{account_id}", variant="ghost"):
         st.session_state.pop("selected_account", None)
         st.rerun()
     with st.container(key="account_heading"):
@@ -640,14 +604,14 @@ def account_card(client, account, events, chats, *, disabled=False):
                         "Возобновить",
                         f"resume_{account_id}",
                         disabled=disabled,
-                        class_name="w-full",
+                        width="stretch",
                     ):
                         invoke(client, "POST", path + "/resume")
                 elif button(
                     "Ⅱ Пауза",
                     f"pause_{account_id}",
                     variant="outline",
-                    class_name="w-full",
+                    width="stretch",
                     disabled=disabled or state not in {"active", "logging_in", "password_required"},
                 ):
                     invoke(client, "POST", path + "/pause")
@@ -655,18 +619,18 @@ def account_card(client, account, events, chats, *, disabled=False):
                 if state in {"active", "paused"}:
                     clicked = button(
                         "Войти заново",
-                        confirmation_key("login_again", account_id),
+                        f"login_again_{account_id}",
                         variant="outline",
-                        class_name="w-full",
+                        width="stretch",
                         disabled=disabled,
                     )
                     confirm_action(client, account_id, "login_again", clicked, disabled=disabled)
             with actions[2]:
                 clicked = button(
                     "Logout",
-                    confirmation_key("logout", account_id),
+                    f"logout_{account_id}",
                     variant="secondary",
-                    class_name="w-full",
+                    width="stretch",
                     disabled=disabled,
                 )
                 confirm_action(client, account_id, "logout", clicked, disabled=disabled)
@@ -679,9 +643,9 @@ def account_card(client, account, events, chats, *, disabled=False):
     login_wizard(client, account, events, disabled=disabled)
     tab = ui.tabs(
         options=["Карточка", "События", "Чаты MAX"],
-        default_value="Карточка",
+        value="Карточка",
         key=f"tabs_{account_id}",
-        className="w-full",
+        width="stretch",
     )
     if tab == "События":
         journal(events)
@@ -702,7 +666,7 @@ def topbar(online):
                 f"{'Bridge online' if online else 'Bridge недоступен'}</span>"
             )
         with logout:
-            if button("Выйти", "operator_logout", variant="secondary", class_name="w-full"):
+            if button("Выйти", "operator_logout", variant="secondary", width="stretch"):
                 st.session_state.clear()
                 st.rerun()
 
@@ -760,30 +724,7 @@ def dashboard(client):
     ]
     for index, (label, value) in enumerate(metrics):
         with columns[index]:
-            with ui.element(
-                "div",
-                key=f"metric_{index}",
-                style={
-                    "border": "1px solid #e4e4e7",
-                    "borderRadius": "8px",
-                    "padding": "16px 20px",
-                    "boxShadow": "0 1px 2px #0000000d",
-                    "fontFamily": "system-ui, sans-serif",
-                },
-            ):
-                ui.element(
-                    "div", label, style={"fontSize": "13px", "fontWeight": 500, "color": "#71717a"}
-                )
-                ui.element(
-                    "div",
-                    str(value),
-                    style={
-                        "fontSize": "28px",
-                        "fontWeight": 600,
-                        "lineHeight": "34px",
-                        "color": "#dc2626" if index == 2 and value else "#09090b",
-                    },
-                )
+            ui.metric_card(label, value, key=f"metric_{index}")
     with st.container(border=True):
         st.subheader("Все Account")
         st.caption("Нажмите на строку, чтобы открыть карточку")
@@ -792,16 +733,11 @@ def dashboard(client):
             row_container = st.container(key=f"account_row_{account_id}")
             row, status = row_container.columns([4, 1])
             with row:
-                if button(
+                if st.button(
                     f"{account['name']}  #{account_id}\n{account['phone']} · Inbox {account['inbox_chat_id'] or 'ещё не подключён'}  ›",
-                    f"open_{account_id}",
-                    variant="ghost",
-                    class_name="w-full justify-start text-left h-auto py-3",
-                    style={
-                        "whiteSpace": "pre-line",
-                        "minHeight": "66px",
-                        "overflowWrap": "anywhere",
-                    },
+                    key=f"open_{account_id}",
+                    type="tertiary",
+                    width="stretch",
                 ):
                     st.session_state["selected_account"] = account_id
                     st.rerun()

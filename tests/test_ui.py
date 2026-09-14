@@ -2,13 +2,16 @@ import copy
 import io
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace as NS
 from urllib.error import HTTPError, URLError
-from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
+from streamlit.components.v2.bidi_component.main import _make_trigger_id
 from streamlit.testing.v1 import AppTest
+from streamlit.testing.v1.errors import AppTestError
+from streamlit_shadcn_ui.v2._component import private_component_key
 
 from maxgate.ui.client import ApiRejected, ApiUnavailable, InternalApiClient
 
@@ -71,42 +74,80 @@ def ui(monkeypatch):
     )
     monkeypatch.setattr("maxgate.ui.client.UiSettings", lambda: config)
     monkeypatch.setattr("maxgate.ui.client.InternalApiClient", lambda *_: api)
-    app = AppTest.from_file("maxgate/ui/app.py", default_timeout=10)
+    app = AppTest.from_file(
+        Path(__file__).resolve().parents[1] / "maxgate/ui/app.py", default_timeout=10
+    )
     yield app, api
 
 
 def click(app, key, **values):
-    action, _, account_id = key.rpartition("_")
-    if action in {"logout", "login_again", "delete"}:
-        counter = f"{action}_dialog_revision_{account_id}"
-        generation = app.session_state[counter] if counter in app.session_state else 0
-        if generation:
-            key = f"{key}_{generation}"
     for name, value in values.items():
-        app.session_state[name] = value
+        set_value(app, name, value)
     native = next((b for b in app.button if b.key == key), None)
     if native is not None:
-        native.click()
+        if native.disabled:
+            with pytest.raises(AppTestError):
+                native.click()
+        else:
+            native.click()
+        app.run()
     else:
-        app.session_state[key] = {"value": True, "event_id": str(uuid4())}
-    app.run()
+        trigger(app, key, "click", True)
     assert not app.exception
     return app
 
 
+def mount_key(key):
+    # AppTest does not yet expose a V2 interaction API. Feed the real component
+    # transport state; production code only uses the library's public API.
+    return private_component_key(key=key, kind="", identity={})
+
+
 def component(app, key):
-    return next(e for e in app.get("component_instance") if e.proto.id.endswith("-" + key))
+    native = next((b for b in app.button if b.key == key), None)
+    if native is not None:
+        return native
+    return next(e for e in app.get("bidi_component") if e.proto.id.endswith("-" + mount_key(key)))
+
+
+def has_component(app, key):
+    try:
+        component(app, key)
+        return True
+    except StopIteration:
+        return False
+
+
+def set_value(app, key, value):
+    data = json.loads(component(app, key).proto.json)
+    state = dict(data["state"])
+    if data["kind"] == "tabs":
+        value = next(o["value"] for o in data["props"]["options"] if o["label"] == value)
+    state.update(value=value, clientRevision=state["clientRevision"] + 1)
+    app.session_state[mount_key(key)] = {"state": state}
+
+
+def trigger(app, key, event, value):
+    states = app._tree.get_widget_states()
+    widget = states.widgets.add(id=_make_trigger_id(component(app, key).proto.id, "events"))
+    widget.json_trigger_value = json.dumps([{"event": event, "value": value}])
+    app._run(states)
+
+
+def decide(app, key, confirmed):
+    trigger(app, key, "decision", confirmed)
+    assert not app.exception
 
 
 def is_disabled(app, key):
     native = next((b for b in app.button if b.key == key), None)
     if native is not None:
         return native.disabled
-    return json.loads(component(app, key).proto.json_args)["props"]["disabled"]
+    return json.loads(component(app, key).proto.json)["props"]["disabled"]
 
 
 def select_tab(app, tab):
-    app.session_state["tabs_1"] = tab
+    set_value(app, "tabs_1", tab)
     app.run()
     assert not app.exception
 
@@ -123,8 +164,10 @@ def test_password_gate_and_account_actions(ui):
     app.run()
     assert component(app, "operator_password")
     assert component(app, "operator_login")
+    assert not app.get("component_instance")
+    assert all(e.proto.isolate_styles for e in app.get("bidi_component"))
     assert not api.reads and not api.calls
-    assert not any(e.proto.id.endswith("-open_1") for e in app.get("component_instance"))
+    assert not has_component(app, "open_1")
     click(app, "operator_login", operator_password="wrong")
     assert app.error[0].value == "Неверный пароль"
     assert not api.reads and not api.calls
@@ -147,7 +190,7 @@ def test_unavailable_bridge_hides_mutations(ui):
     sign_in(app, open_account=False)
     assert "Bridge недоступен" in app.error[0].value
     assert is_disabled(app, "create_open")
-    assert not any(e.proto.id.endswith("-create_submit") for e in app.get("component_instance"))
+    assert not has_component(app, "create_submit")
     assert not api.calls
 
 
@@ -211,7 +254,7 @@ def test_creation_settings_and_delete_use_api(ui):
     )
     assert api.calls[-1][0:2] == ("POST", "/accounts")
     assert api.calls[-1][2]["tg_bot_token"] == "new-bot-secret"
-    assert "create_token" not in app.session_state
+    assert mount_key("create_token") not in app.session_state
     assert "creating_account" not in app.session_state
     click(app, "open_1")
     click(app, "save_1", name_1="Renamed")
@@ -219,8 +262,7 @@ def test_creation_settings_and_delete_use_api(ui):
     assert api.calls[-1][2]["name"] == "Renamed"
     click(app, "delete_1")
     assert api.calls[-1][0] == "PATCH"
-    app.session_state["delete_dialog_1_0"] = {"open": False, "confirm": True}
-    app.run()
+    decide(app, "delete_dialog_1_0", True)
     assert not app.exception
     assert api.calls[-1] == ("DELETE", "/accounts/1", None)
 
@@ -299,14 +341,14 @@ def test_confirmation_can_cancel_and_reopen(ui, action, endpoint):
     app, api = ui
     sign_in(app)
     click(app, f"{action}_1")
-    app.session_state[f"{action}_dialog_1_0"] = {"open": False, "confirm": False}
     app.run()
+    assert json.loads(component(app, f"{action}_dialog_1_0").proto.json)["props"]["show"]
+    decide(app, f"{action}_dialog_1_0", False)
     assert not api.calls
     click(app, f"{action}_1")
     assert component(app, f"{action}_dialog_1_1")
     assert not api.calls
-    app.session_state[f"{action}_dialog_1_1"] = {"open": False, "confirm": True}
-    app.run()
+    decide(app, f"{action}_dialog_1_1", True)
     assert api.calls == [
         ("POST", f"/accounts/1/{endpoint}", None) if endpoint else ("DELETE", "/accounts/1", None)
     ]
@@ -336,7 +378,7 @@ def test_sms_waiting_countdown_and_trim(ui):
     app.run()
     click(app, "credential_send_1_code", credential_value_1_code=" 123456 ")
     assert api.calls[-1] == ("POST", "/accounts/1/login/code", {"code": "123456"})
-    assert "credential_value_1_code" not in app.session_state
+    assert mount_key("credential_value_1_code") not in app.session_state
     assert component(app, "credential_value_1_code_1")
 
 
@@ -348,7 +390,7 @@ def test_create_validation_and_cancel_clear_token(ui):
     assert any("Заполните название" in e.value for e in app.error)
     assert not api.calls
     click(app, "create_cancel")
-    assert "create_token" not in app.session_state
+    assert mount_key("create_token") not in app.session_state
     # AppTest retains the dismissed dialog tree; supply its stale native select state.
     app.session_state["create_mode"] = "private"
     click(app, "create_open")
@@ -358,7 +400,7 @@ def test_create_validation_and_cancel_clear_token(ui):
 def test_operator_logout_clears_authentication(ui):
     app, api = ui
     sign_in(app)
-    assert "operator_password" not in app.session_state
+    assert mount_key("operator_password") not in app.session_state
     click(app, "operator_logout")
     assert "authenticated" not in app.session_state
     assert component(app, "operator_password")
@@ -376,22 +418,17 @@ def test_events_escape_message_html(ui):
 
 
 @pytest.mark.parametrize("action", ["logout", "login_again", "delete"])
-def test_closed_confirmation_ignores_replayed_opener_after_pause(ui, action):
+def test_closed_confirmation_stays_closed_after_pause_and_rerun(ui, action):
     app, api = ui
     sign_in(app)
-    opener = f"{action}_1"
-    event = {"value": True, "event_id": "original-open"}
-    app.session_state[opener] = event
+    click(app, f"{action}_1")
     app.run()
-    app.session_state[f"{action}_dialog_1_0"] = {"open": False, "confirm": False}
-    app.run()
+    assert json.loads(component(app, f"{action}_dialog_1_0").proto.json)["props"]["show"]
+    decide(app, f"{action}_dialog_1_0", False)
     click(app, "pause_1")
-    # Simulate remount: the frontend retains a click, library bookkeeping was reset.
-    app.session_state[opener + "__non_resettable_state"] = {"value": False, "event_id": "remounted"}
-    app.session_state[opener] = event
     app.run()
     assert f"{action}_pending_1" not in app.session_state
-    assert not any("_dialog_1_" in e.proto.id for e in app.get("component_instance"))
+    assert not has_component(app, f"{action}_dialog_1_1")
     assert api.calls == [("POST", "/accounts/1/pause", None)]
 
 
@@ -410,8 +447,8 @@ def test_rejected_create_keeps_dialog_and_renders_empty_token(ui):
     app.run()
     assert app.session_state["creating_account"]
     token = component(app, "create_token_1")
-    assert json.loads(token.proto.json_args)["props"]["defaultValue"] == ""
-    assert "create_token" not in app.session_state
+    assert json.loads(token.proto.json)["state"]["value"] == ""
+    assert mount_key("create_token") not in app.session_state
 
 
 def test_open_create_disables_submit_during_outage(ui):
@@ -426,19 +463,7 @@ def test_open_create_disables_submit_during_outage(ui):
     )
     assert not api.calls
     assert app.session_state["creating_account"]
-    # Replay an event accepted while disabled after availability/props change.
-    event = {"value": True, "event_id": "offline-submit"}
-    app.session_state["create_submit"] = event
-    app.run()
     api.available = True
-    app.session_state["create_submit__non_resettable_state"] = {
-        "value": False,
-        "event_id": "remounted",
-    }
-    app.session_state["create_submit"] = event
-    app.session_state["create_name"] = "New"
-    app.session_state["create_phone"] = "+123"
-    app.session_state["create_token"] = "synthetic-token"
     app.run()
     assert not is_disabled(app, "create_submit")
     assert not api.calls
@@ -479,7 +504,7 @@ def test_rename_topic_validation_cancel_and_safe_error(ui):
     assert not api.calls
     click(app, "rename_cancel_1", tabs_1="Чаты MAX")
     select_tab(app, "Чаты MAX")
-    assert not any(e.proto.id.endswith("-rename_save_1") for e in app.get("component_instance"))
+    assert not has_component(app, "rename_save_1")
     click(app, "rename_1", tabs_1="Чаты MAX")
 
     def rejected(*_):
@@ -510,7 +535,7 @@ def test_no_rename_without_topic_or_when_bridge_unavailable(ui):
 
     api.get = get
     select_tab(app, "Чаты MAX")
-    assert not any(e.proto.id.endswith("-rename_1") for e in app.get("component_instance"))
+    assert not has_component(app, "rename_1")
 
 
 def test_rename_api_error_does_not_expose_response_or_credentials():
@@ -563,7 +588,7 @@ def test_chat_list_search_without_pagination_or_button_iframes(ui):
     assert len([b for b in app.button if b.key.startswith("topic_")]) == 100
     assert len([b for b in app.button if b.key.startswith("rename_")]) == 100
     assert not any(s.key.startswith("chat_page_") for s in app.selectbox)
-    app.session_state["tabs_1"] = "Чаты MAX"
+    set_value(app, "tabs_1", "Чаты MAX")
     app.text_input(key="chat_search_1").set_value("Chat 200").run()
     rows = [b for b in app.button if b.key.startswith("rename_")]
     assert len(rows) == 1 and rows[0].key == "rename_200"
