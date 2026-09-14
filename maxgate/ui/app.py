@@ -62,7 +62,17 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 [class*="st-key-account_tile_"] button {width:100%;height:100%;background:transparent!important;border:0!important;border-radius:8px;color:transparent!important}
 [class*="st-key-account_tile_"] button:focus-visible {outline:2px solid #18181b;outline-offset:3px}
 .account-tile-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
-.account-tile-heading strong {overflow-wrap:anywhere}
+.account-tile-heading strong {overflow-wrap:anywhere;min-width:0;font-size:15px;color:#09090b}
+.account-list-heading {margin-top:8px;padding-bottom:12px}
+.account-list-heading h3 {line-height:24px;margin:0 0 4px;color:#09090b}
+.account-list-heading .subtle {font-size:13px;line-height:20px}
+.st-key-account_list {gap:12px!important}
+.account-tile-details {display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 16px;margin:0;padding-bottom:12px;font-size:13px;line-height:20px}
+.account-tile-details dt,.account-tile-details dd {font-size:13px!important;line-height:20px}
+.account-tile-details dt {color:#71717a}
+.account-tile-details dd {margin:0;color:#09090b;overflow-wrap:anywhere}
+.account-tile-reason {margin-top:10px;font-size:12px;line-height:18px;color:#71717a;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.account-tile-reason.error,.account-tile-reason.session_lost {color:#991b1b;background:transparent}
 .st-key-danger {border-color:#fecaca!important}
 .st-key-login_panel {max-width:380px;margin:18vh auto 0;padding:28px 24px;border-radius:12px!important;background:white}
 [data-testid="stAppViewContainer"]:has(.st-key-login_panel) {background:#fafafa}
@@ -739,23 +749,45 @@ def dashboard(client):
     for index, (label, value) in enumerate(metrics):
         with columns[index]:
             ui.metric_card(label, value, key=f"metric_{index}")
-    st.subheader("Все учетки")
-    if not accounts:
-        st.caption("Учеток пока нет")
-        return
-    for start in range(0, len(accounts), 2):
-        columns = st.columns(2)
-        for column, account in zip(columns, accounts[start : start + 2], strict=False):
-            account_id, state = account["id"], account["state"]
-            with column, st.container(border=True, key=f"account_tile_{account_id}"):
-                markup(
-                    '<div class="account-tile-heading">'
-                    f"<strong>{escape(account['name'])}</strong>{badge(STATES[state], state)}</div>"
-                    f'<div class="subtle">{escape(account["phone"])}</div>'
+    with st.container(key="account_list"):
+        markup(
+            '<div class="account-list-heading"><h3>Все учетки</h3>'
+            '<div class="subtle">Нажмите на карточку, чтобы открыть</div></div>'
+        )
+        if not accounts:
+            st.caption("Учеток пока нет")
+            return
+        for start in range(0, len(accounts), 2):
+            columns = st.columns(2)
+            for column, account in zip(columns, accounts[start : start + 2], strict=False):
+                account_id, state = account["id"], account["state"]
+                inbox = "личный" if account["inbox_mode"] == "private" else "группа"
+                if account["inbox_mode"] != "private" and account["inbox_chat_id"] is not None:
+                    inbox += f" · {account['inbox_chat_id']}"
+                details = (
+                    ("Телефон", account["phone"]),
+                    ("Inbox", inbox),
+                    ("Каналы", "да" if account["relay_channels"] else "нет"),
+                    ("Владелец TG", account["owner_tg_user_id"]),
                 )
-                if st.button(account["name"], key=f"open_{account_id}", width="stretch"):
-                    st.session_state["selected_account"] = account_id
-                    st.rerun()
+                rows = "".join(
+                    f"<dt>{label}</dt><dd>{escape(str(value))}</dd>" for label, value in details
+                )
+                reason = (
+                    f'<div class="account-tile-reason {escape(state)}">'
+                    f"{escape(account['state_reason'])}</div>"
+                    if account.get("state_reason")
+                    else ""
+                )
+                with column, st.container(border=True, key=f"account_tile_{account_id}"):
+                    markup(
+                        '<div class="account-tile-heading">'
+                        f"<strong>{escape(account['name'])}</strong>{badge(STATES[state], state)}</div>"
+                        f'<dl class="account-tile-details">{rows}</dl>{reason}'
+                    )
+                    if st.button(account["name"], key=f"open_{account_id}", width="stretch"):
+                        st.session_state["selected_account"] = account_id
+                        st.rerun()
 
 
 def main():

@@ -36,6 +36,7 @@ htmlcov/
 *.swp
 *.swo
 .DS_Store
+.claude/
 
 temp/
 
