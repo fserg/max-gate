@@ -94,3 +94,7 @@
   на каждой ветке, из `main` собирает образ в реестр Gitea и вызывает вебхук Compose в Dokploy.
   Dokploy поднимает `docker-compose.dokploy.yml` с томом `maxgate-data`, UI доступен доменом
   через Traefik. Workflow лежит в `.gitea/workflows`, зеркало на GitHub его не выполняет.
+- Переезд на прод выполнен: dev остановлен, `maxgate.db` перенесена в том `maxgate-data`
+  (integrity ok, контрольная сумма совпала). Account 1 поднялся `active` на сохранённой Session
+  без SMS, Catch-up и polling Telegram запущены; UI открылся по HTTPS. Dev-база отложена
+  в `temp/data-before-prod`, чтобы dev не поднимал боевые Account.
