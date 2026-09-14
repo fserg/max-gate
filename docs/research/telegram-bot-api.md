@@ -2,7 +2,7 @@
 
 Проверено 13 сентября 2026 по [документации Bot API](https://core.telegram.org/bots/api),
 [changelog](https://core.telegram.org/bots/api-changelog), описанию
-[форумов](https://core.telegram.org/api/forum) и живым вызовам к боту `@fsmax_bot`.
+[форумов](https://core.telegram.org/api/forum) и живым вызовам к тестовому боту.
 Актуальная версия Bot API на дату проверки: 10.3 (24 августа 2026).
 
 ## Топики в личном чате с ботом
@@ -19,7 +19,7 @@
   (май 2026, после Bot API 10.0): у части ботов `sendMessage` с `message_thread_id` в личном
   топике падает с «message thread not found».
 
-Живой тест 13.09.2026 на `@fsmax_bot` (`has_topics_enabled: true`,
+Живой тест 13.09.2026 на тестовом боте (`has_topics_enabled: true`,
 `allows_users_to_create_topics: true`):
 
 | Вызов | Результат |

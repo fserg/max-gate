@@ -249,7 +249,7 @@ def create_account(client, *, disabled=False):
     phone = field("Телефон MAX", "create_phone", placeholder="+7…")
     token = field("Токен Telegram-бота", "create_token", secret=True)
     st.caption("Один бот — одна учетка. Для private Inbox включите Topics у бота в BotFather.")
-    owner = field("Telegram id Owner", "create_owner", "79652610")
+    owner = field("Telegram id Owner", "create_owner", placeholder="напр. 123456789")
     mode = inbox_mode("create_mode")
     channels = ui.switch(label="Переносить Channel", key="create_channels")
     st.caption("По умолчанию Channel не отражаются")

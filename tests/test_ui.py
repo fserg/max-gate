@@ -297,6 +297,7 @@ def test_creation_settings_and_delete_use_api(ui):
         create_name="Second Account",
         create_phone="+1234567890",
         create_token="new-bot-secret",
+        create_owner="42",
     )
     assert api.calls[-1][0:2] == ("POST", "/accounts")
     assert api.calls[-1][2]["tg_bot_token"] == "new-bot-secret"
@@ -493,6 +494,7 @@ def test_rejected_create_keeps_dialog_and_renders_empty_token(ui):
         create_name="New",
         create_phone="+1234567890",
         create_token="synthetic-token",
+        create_owner="42",
     )
     app.run()
     assert app.session_state["creating_account"]
@@ -720,7 +722,12 @@ def test_create_error_survives_refresh(ui):
 
     api.request = reject
     click(
-        app, "create_submit", create_name="111", create_phone="+79181111111", create_token="dummy"
+        app,
+        "create_submit",
+        create_name="111",
+        create_phone="+79181111111",
+        create_token="dummy",
+        create_owner="42",
     )
     app.run()
     assert any("BotFather" in e.value for e in app.error)

@@ -146,7 +146,7 @@ def main():
     commands.add_parser("gen-key")
     commands.add_parser("migrate")
     seed = commands.add_parser("seed-account")
-    seed.add_argument("--owner", type=int, default=79652610)
+    seed.add_argument("--owner", type=int, required=True)
     seed.add_argument("--session", type=Path, default=Path("temp/pymax/session.db"))
     check = commands.add_parser("max-check")
     check.add_argument("account_id", type=int)
