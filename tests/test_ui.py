@@ -84,7 +84,11 @@ def click(app, key, **values):
             key = f"{key}_{generation}"
     for name, value in values.items():
         app.session_state[name] = value
-    app.session_state[key] = {"value": True, "event_id": str(uuid4())}
+    native = next((b for b in app.button if b.key == key), None)
+    if native is not None:
+        native.click()
+    else:
+        app.session_state[key] = {"value": True, "event_id": str(uuid4())}
     app.run()
     assert not app.exception
     return app
@@ -95,6 +99,9 @@ def component(app, key):
 
 
 def is_disabled(app, key):
+    native = next((b for b in app.button if b.key == key), None)
+    if native is not None:
+        return native.disabled
     return json.loads(component(app, key).proto.json_args)["props"]["disabled"]
 
 
@@ -514,3 +521,49 @@ def test_rename_api_error_does_not_expose_response_or_credentials():
     with pytest.raises(ApiRejected, match="Telegram не смог переименовать Topic") as error:
         client.patch("/accounts/1/chats/1/topic", {"name": "Title"})
     assert "secret-token" not in str(error.value)
+
+
+def test_saved_topic_title_after_new_ui_session(ui):
+    app, api = ui
+    original = api.get
+
+    def get(path):
+        result = original(path)
+        if path.endswith("/chats"):
+            result[0]["topic_title"] = "Анна (бывший ГБ ИП Олешко)"
+        return result
+
+    api.get = get
+    sign_in(app)
+    select_tab(app, "Чаты MAX")
+    assert any("Анна (бывший ГБ ИП Олешко)" in m.value for m in app.markdown)
+
+
+def test_chat_list_search_without_pagination_or_button_iframes(ui):
+    app, api = ui
+    original = api.get
+
+    def get(path):
+        result = original(path)
+        if path.endswith("/chats"):
+            return [
+                dict(result[0], id=i, max_title=f"Chat {i}", topic_id=None if i % 2 else 50)
+                for i in range(1, 201)
+            ]
+        return result
+
+    api.get = get
+    sign_in(app)
+    select_tab(app, "Чаты MAX")
+    assert not any(
+        e.proto.id.rsplit("-", 1)[-1].startswith(("topic_", "rename_", "mute_"))
+        for e in app.get("component_instance")
+    )
+    assert len([b for b in app.button if b.key.startswith("mute_")]) == 200
+    assert len([b for b in app.button if b.key.startswith("topic_")]) == 100
+    assert len([b for b in app.button if b.key.startswith("rename_")]) == 100
+    assert not any(s.key.startswith("chat_page_") for s in app.selectbox)
+    app.session_state["tabs_1"] = "Чаты MAX"
+    app.text_input(key="chat_search_1").set_value("Chat 200").run()
+    rows = [b for b in app.button if b.key.startswith("rename_")]
+    assert len(rows) == 1 and rows[0].key == "rename_200"

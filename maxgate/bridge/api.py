@@ -3,6 +3,7 @@ import hmac
 from typing import Literal
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiohttp import web
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 from sqlalchemy import select
@@ -63,6 +64,7 @@ def chat_json(link):
             "max_chat_id",
             "max_chat_type",
             "max_title",
+            "topic_title",
             "topic_id",
             "renamed_by_owner",
             "muted",
@@ -256,8 +258,18 @@ class InternalApi:
                 bot = self.bot_factory(self.supervisor.crypto.decrypt(account.tg_bot_token_enc))
                 try:
                     tg = TgBot("", account, self.supervisor.sessions, bot=bot)
-                    await tg.edit_topic(link.topic_id, data.name)
-                    link = await store.change_chat(link.id, renamed_by_owner=True)
+                    try:
+                        await tg.edit_topic(link.topic_id, data.name)
+                    except TelegramBadRequest as exc:
+                        # A retry can repair local state after Telegram already accepted the name.
+                        if (
+                            exc.message.removeprefix("Bad Request: ").upper()
+                            != "TOPIC_NOT_MODIFIED"
+                        ):
+                            raise
+                    link = await store.change_chat(
+                        link.id, renamed_by_owner=True, topic_title=data.name
+                    )
                 finally:
                     await bot.session.close()
                 return web.json_response(chat_json(link))

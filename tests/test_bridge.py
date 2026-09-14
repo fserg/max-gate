@@ -365,7 +365,7 @@ async def test_topic_endpoint_bound_inbox_idempotency_and_scope(storage, tmp_pat
 
 
 @pytest.mark.parametrize(
-    "case", ["success", "no_topic", "telegram_error", "wrong_account", "empty", "long"]
+    "case", ["success", "unchanged", "no_topic", "telegram_error", "wrong_account", "empty", "long"]
 )
 async def test_rename_topic_endpoint(storage, tmp_path, case):
     from aiogram.exceptions import TelegramBadRequest
@@ -380,9 +380,10 @@ async def test_rename_topic_endpoint(storage, tmp_path, case):
     if case != "no_topic":
         await store.change_chat(link.id, topic_id=77)
     bot = NS(edit_forum_topic=AsyncMock(), session=NS(close=AsyncMock()))
-    if case == "telegram_error":
+    if case in {"telegram_error", "unchanged"}:
         bot.edit_forum_topic.side_effect = TelegramBadRequest(
-            method=EditForumTopic(chat_id=100, message_thread_id=77), message="secret-token"
+            method=EditForumTopic(chat_id=100, message_thread_id=77),
+            message="Bad Request: TOPIC_NOT_MODIFIED" if case == "unchanged" else "secret-token",
         )
     api = InternalApi(supervisor, "fake", bot_factory=lambda _: bot)
     account_id = 2 if case == "wrong_account" else 1
@@ -395,6 +396,7 @@ async def test_rename_topic_endpoint(storage, tmp_path, case):
         )
         expected = {
             "success": 200,
+            "unchanged": 200,
             "no_topic": 400,
             "telegram_error": 502,
             "wrong_account": 404,
@@ -405,15 +407,28 @@ async def test_rename_topic_endpoint(storage, tmp_path, case):
         assert "secret-token" not in await response.text()
         response = await client.get("/accounts/1/chats", headers={"Authorization": "Bearer fake"})
         updated = (await response.json())[0]
-        assert updated["renamed_by_owner"] == (case == "success")
+        assert updated["renamed_by_owner"] == (case in {"success", "unchanged"})
         assert updated["max_title"] == "MAX title"
-    if case == "success":
+        assert updated["topic_title"] == (
+            "Моё название" if case in {"success", "unchanged"} else None
+        )
+    if case in {"success", "unchanged"}:
         bot.edit_forum_topic.assert_awaited_once_with(
             chat_id=100, message_thread_id=77, name="Моё название"
         )
     elif case != "telegram_error":
         bot.edit_forum_topic.assert_not_awaited()
     await supervisor.close()
+    if case in {"success", "unchanged"}:
+        from maxgate.db import create_storage
+
+        engine, _sessions, _crypto = storage
+        fresh_engine, fresh_sessions = create_storage(str(engine.url))
+        try:
+            persisted = await RelayStorage(1, fresh_sessions).chat(link_id=link.id)
+            assert persisted.topic_title == "Моё название"
+        finally:
+            await fresh_engine.dispose()
 
 
 async def test_ui_rename_serializes_with_max_title_change_and_service_event(storage, tmp_path):

@@ -285,6 +285,7 @@ async def test_edits_deletes_and_owner_rename(relay):
     await relay.queues.drain()
     assert relay.tg.edit_topic.await_count == 1
     assert (await relay.store.chat(link_id=link.id)).max_title == "Another"
+    assert (await relay.store.chat(link_id=link.id)).topic_title == "Owner's title"
 
 
 async def test_failed_relay_note_and_temp_cleanup(relay):

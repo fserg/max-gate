@@ -78,6 +78,7 @@ class ChatLink(Base):
     max_chat_type: Mapped[str] = mapped_column(String)
     max_title: Mapped[str | None] = mapped_column(String)
     topic_id: Mapped[int | None] = mapped_column(BigInteger)
+    topic_title: Mapped[str | None] = mapped_column(String)
     renamed_by_owner: Mapped[bool] = mapped_column(default=False)
     muted: Mapped[bool] = mapped_column(default=False)
     last_relayed_time: Mapped[int] = mapped_column(BigInteger, default=0)

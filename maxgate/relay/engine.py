@@ -612,9 +612,11 @@ class RelayEngine:
                     current = await self.store.chat(link_id=link.id)
                     if current.max_title == chat.title:
                         return
+                    changes = {"max_title": chat.title}
                     if current.topic_id is not None and not current.renamed_by_owner:
                         await self.tg.edit_topic(current.topic_id, chat.title)
-                    await self.store.change_chat(link.id, max_title=chat.title)
+                        changes["topic_title"] = chat.title
+                    await self.store.change_chat(link.id, **changes)
 
             self._submit(link, run)
 
@@ -622,7 +624,7 @@ class RelayEngine:
         link = await self.store.chat(topic_id=topic_id)
         if link and title is not None:
             async with self.topic_locks.setdefault(link.id, asyncio.Lock()):
-                await self.store.change_chat(link.id, renamed_by_owner=True)
+                await self.store.change_chat(link.id, renamed_by_owner=True, topic_title=title)
 
     async def delete_command(self, link, command):
         reply = getattr(command, "reply_to_message", None)

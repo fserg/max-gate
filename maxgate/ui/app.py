@@ -474,11 +474,24 @@ def chat_links(client, account, chats, *, disabled=False):
         )
         if not chats:
             st.info("ChatLink появятся после первого входа в MAX")
-        for link in chats:
+        query = st.text_input("Поиск чата", key=f"chat_search_{account['id']}").strip().casefold()
+        filtered = [
+            link
+            for link in chats
+            if not query
+            or query
+            in " ".join(
+                str(link.get(key) or "") for key in ("topic_title", "max_title", "max_chat_id")
+            ).casefold()
+        ]
+        st.caption(f"Найдено: {len(filtered)}")
+        for link in filtered:
             with st.container(key=f"chat_row_{link['id']}"):
                 label, actions = st.columns([1, 1])
                 with label:
-                    title = escape(str(link["max_title"] or link["max_chat_id"]))
+                    title = escape(
+                        str(link.get("topic_title") or link["max_title"] or link["max_chat_id"])
+                    )
                     markup(
                         f'<div style="opacity:{0.55 if link["muted"] else 1};font-weight:500">{title}</div>'
                     )
@@ -503,11 +516,11 @@ def chat_links(client, account, chats, *, disabled=False):
                         horizontal_alignment="right",
                         gap="small",
                     ):
-                        if link["topic_id"] is None and button(
+                        if link["topic_id"] is None and st.button(
                             "Создать Topic",
-                            f"topic_{link['id']}",
-                            variant="secondary",
-                            class_name="w-full",
+                            key=f"topic_{link['id']}",
+                            type="secondary",
+                            width="stretch",
                             disabled=disabled,
                         ):
                             if account["inbox_chat_id"] is None:
@@ -520,19 +533,19 @@ def chat_links(client, account, chats, *, disabled=False):
                                     "POST",
                                     f"/accounts/{account['id']}/chats/{link['id']}/topic",
                                 )
-                        if link["topic_id"] is not None and button(
+                        if link["topic_id"] is not None and st.button(
                             "Переименовать",
-                            f"rename_{link['id']}",
-                            variant="secondary",
-                            class_name="w-full",
+                            key=f"rename_{link['id']}",
+                            type="secondary",
+                            width="stretch",
                             disabled=disabled,
                         ):
                             st.session_state["renaming_topic"] = (account["id"], link["id"])
-                        if button(
+                        if st.button(
                             "Unmute" if link["muted"] else "Mute",
-                            f"mute_{link['id']}",
-                            variant="secondary",
-                            class_name="w-full",
+                            key=f"mute_{link['id']}",
+                            type="secondary",
+                            width="stretch",
                             disabled=disabled,
                         ):
                             verb = "unmute" if link["muted"] else "mute"

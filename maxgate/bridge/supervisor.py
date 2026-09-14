@@ -144,7 +144,7 @@ class Supervisor:
                     await session.execute(
                         update(ChatLink)
                         .where(ChatLink.account_id == account_id)
-                        .values(topic_id=None, renamed_by_owner=False)
+                        .values(topic_id=None, topic_title=None, renamed_by_owner=False)
                     )
                     await session.execute(
                         delete(MessageLink).where(MessageLink.account_id == account_id)
