@@ -90,3 +90,7 @@
   Docker пересобран.
 - Доработка имён и переименования Topic подтверждена живой проверкой Сергея: подписи
   и переименование Topic из UI работают.
+- Перенос на прод в Dokploy (ADR-0004, `docs/deploy.md`): Gitea Actions гоняет `ruff` и `pytest`
+  на каждой ветке, из `main` собирает образ в реестр Gitea и вызывает вебхук Compose в Dokploy.
+  Dokploy поднимает `docker-compose.dokploy.yml` с томом `maxgate-data`, UI доступен доменом
+  через Traefik. Workflow лежит в `.gitea/workflows`, зеркало на GitHub его не выполняет.

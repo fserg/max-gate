@@ -9,7 +9,7 @@ Topic уходят обратно в MAX. Один Gate обслуживает �
 Общение и документация на русском; термины кода (Account, Owner, Inbox, Topic, ChatLink,
 MessageLink, Relay, Echo, Catch-up, Note) на английском. Глоссарий с запрещёнными синонимами:
 `CONTEXT.md`. Архитектура, модель данных, потоки и границы v1: `docs/design.md`. Решения: `docs/adr/`.
-Проверенные факты о PyMax 2.4.1 и Bot API: `docs/research/`. Хронология работ: `docs/implementation-log.md`.
+Проверенные факты о PyMax 2.4.1 и Bot API: `docs/research/`. Хронология работ: `docs/implementation-log.md`. Развёртывание: `docs/deploy.md`.
 
 ## Команды
 
@@ -23,8 +23,12 @@ uv run maxgate gen-key | migrate | seed-account --owner <tg_id> | max-check <acc
 uv run python -m maxgate.bridge           # процесс bridge (InternalApi + Supervisor)
 uv run streamlit run maxgate/ui/app.py --server.address=127.0.0.1 --server.port=8501
 docker compose up --build -d              # dev: override монтирует temp/data и публикует API на 8787
-docker compose -f docker-compose.yml up --build -d   # production без override
+docker compose -f docker-compose.yml up --build -d   # запуск без Dokploy, без override
 ```
+
+Prod: push в `main` → `.gitea/workflows/deploy.yml` (тесты, образ в реестр Gitea, вебхук Dokploy) →
+Dokploy поднимает `docker-compose.dokploy.yml`. Остальные ветки проходят только тесты. Настройка,
+откат через `MAXGATE_IMAGE_TAG` и резервная копия: `docs/deploy.md`, решение: ADR-0004.
 
 Настройки через `.env` (см. `.env.example`): `MAXGATE_SECRET_KEY` (Fernet), `MAXGATE_INTERNAL_TOKEN`,
 `MAXGATE_UI_PASSWORD`, `MAXGATE_INTERNAL_URL`, `MAXGATE_DATA_DIR`. Локальный InternalApi на порту 8787
@@ -85,3 +89,5 @@ docker compose -f docker-compose.yml up --build -d   # production без overrid
 - `docs/design.md` и ADR не менять без явной просьбы; новые решения оформлять как ADR.
 - `git commit`/`push` только по запросу пользователя.
 - Не запускать локальный bridge и Docker-bridge одновременно с одной базой.
+- Не запускать локальный bridge с боевыми Account: они работают на проде (бот и сессия MAX одни).
+- Push в `main` сразу уходит в прод: доработки вести в ветке и сливать после зелёного CI.

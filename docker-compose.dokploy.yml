@@ -1,0 +1,45 @@
+# Production в Dokploy (Compose из git, ветка main). Образ собирает CI
+# (.gitea/workflows/deploy.yml), здесь только запуск. Dokploy кладёт .env из вкладки
+# Environment рядом с этим файлом и запускает `docker compose ... up -d --build`.
+# Обязательные переменные: MAXGATE_IMAGE (реестр/владелец/max-gate без тега),
+# MAXGATE_SECRET_KEY, MAXGATE_INTERNAL_TOKEN, MAXGATE_UI_PASSWORD.
+# MAXGATE_IMAGE_TAG закрепляет конкретную сборку (откат), по умолчанию latest.
+# UI публикуется доменом Dokploy (сервис ui, порт 8501), портов наружу нет.
+services:
+  bridge:
+    image: ${MAXGATE_IMAGE:?Set MAXGATE_IMAGE}:${MAXGATE_IMAGE_TAG:-latest}
+    pull_policy: always
+    environment:
+      MAXGATE_SECRET_KEY: ${MAXGATE_SECRET_KEY:?Set MAXGATE_SECRET_KEY}
+      MAXGATE_INTERNAL_TOKEN: ${MAXGATE_INTERNAL_TOKEN:?Set MAXGATE_INTERNAL_TOKEN}
+      MAXGATE_DATA_DIR: /data
+      MAXGATE_API_HOST: 0.0.0.0
+      MAXGATE_API_PORT: "8080"
+    command: ["sh", "-c", "maxgate migrate && exec python -m maxgate.bridge"]
+    volumes:
+      - maxgate-data:/data
+    restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "python", "-m", "maxgate.bridge.healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  ui:
+    image: ${MAXGATE_IMAGE:?Set MAXGATE_IMAGE}:${MAXGATE_IMAGE_TAG:-latest}
+    pull_policy: always
+    environment:
+      MAXGATE_UI_PASSWORD: ${MAXGATE_UI_PASSWORD:?Set MAXGATE_UI_PASSWORD}
+      MAXGATE_INTERNAL_TOKEN: ${MAXGATE_INTERNAL_TOKEN:?Set MAXGATE_INTERNAL_TOKEN}
+      MAXGATE_INTERNAL_URL: http://bridge:8080
+    command: ["streamlit", "run", "maxgate/ui/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    depends_on:
+      bridge:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  # Фиксированное имя: том не зависит от appName Dokploy и переживает пересоздание Compose.
+  maxgate-data:
+    name: maxgate-data

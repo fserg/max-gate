@@ -1,0 +1,70 @@
+# Gitea Actions: читает только .gitea/workflows, GitHub этот каталог игнорирует,
+# поэтому зеркало на GitHub ничего не собирает.
+name: CI / Deploy
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: uv sync --frozen
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Pytest
+        run: uv run pytest -q
+
+  # Образ собирается только из main и только после зелёных тестов;
+  # Dokploy затем тянет его из реестра Gitea, сам ничего не собирает.
+  image:
+    needs: test
+    if: gitea.event_name == 'push' && gitea.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push image
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          SERVER_URL: ${{ gitea.server_url }}
+          REPOSITORY: ${{ gitea.repository }}
+          OWNER: ${{ gitea.repository_owner }}
+        shell: bash
+        run: |
+          if [ -z "$REGISTRY_TOKEN" ]; then
+            echo "REGISTRY_TOKEN secret is not set"
+            exit 1
+          fi
+          registry="${SERVER_URL#*://}"
+          image="$registry/${REPOSITORY,,}"
+          tag="$(git rev-parse --short=12 HEAD)"
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$registry" -u "$OWNER" --password-stdin
+          DOCKER_BUILDKIT=1 docker build \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            --tag "$image:$tag" \
+            --tag "$image:latest" \
+            .
+          docker push "$image:$tag"
+          docker push "$image:latest"
+
+      - name: Trigger Dokploy deploy
+        env:
+          DOKPLOY_WEBHOOK_URL: ${{ secrets.DOKPLOY_WEBHOOK_URL }}
+        shell: bash
+        run: |
+          if [ -z "$DOKPLOY_WEBHOOK_URL" ]; then
+            echo "DOKPLOY_WEBHOOK_URL secret is not set, skipping deploy"
+            exit 0
+          fi
+          sha="$(git rev-parse HEAD)"
+          title="$(git log -1 --format=%s | tr -d '"\\' | cut -c1-100)"
+          # Вебхук Compose в Dokploy сверяет ветку из тела по заголовку X-Gitea-Event.
+          curl -fsS -X POST "$DOKPLOY_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Gitea-Event: push" \
+            -d "{\"ref\":\"refs/heads/main\",\"after\":\"$sha\",\"commits\":[{\"message\":\"${sha:0:12} $title\"}]}"
