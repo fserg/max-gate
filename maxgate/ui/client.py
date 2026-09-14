@@ -41,14 +41,20 @@ class InternalApiClient:
                 raw = response.read()
                 return json.loads(raw) if raw else None
         except HTTPError as exc:
-            # Тело ошибочного ответа не показываем: сторонний proxy может отражать credentials.
+            # Only translate a known response; never render arbitrary bodies (credentials).
+            if method == "POST" and path == "/accounts" and exc.code == 400:
+                if exc.read(256) == b"Bot requires has_topics_enabled":
+                    raise ApiRejected(
+                        "У бота выключены темы. Включите Topics в BotFather для этого бота "
+                        "и повторите создание учетки. Темы нужны для режима личного Inbox."
+                    ) from None
             messages = {
-                400: "Проверьте поля и состояние Account.",
+                400: "Проверьте поля и состояние учетки.",
                 401: "InternalApi отклонил токен доступа.",
                 412: "Сначала подключите Inbox: Owner должен отправить /start боту.",
-                409: "Этот Telegram-бот уже назначен другому Account.",
-                404: "Account или ChatLink больше не существует.",
-                502: "Gate не смог выполнить операцию. Проверьте журнал Account.",
+                409: "Этот Telegram-бот уже назначен другой учетке.",
+                404: "Учетка или ChatLink больше не существует.",
+                502: "Gate не смог выполнить операцию. Проверьте журнал учетки.",
             }
             if method == "PATCH" and path.endswith("/topic"):
                 messages.update(

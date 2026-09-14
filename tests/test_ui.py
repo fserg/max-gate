@@ -9,7 +9,8 @@ from urllib.error import HTTPError, URLError
 import pytest
 from pydantic import SecretStr
 from streamlit.components.v2.bidi_component.main import _make_trigger_id
-from streamlit.testing.v1 import AppTest
+from streamlit.proto.WidgetStates_pb2 import WidgetState
+from streamlit.testing.v1 import AppTest, element_tree
 from streamlit.testing.v1.errors import AppTestError
 from streamlit_shadcn_ui.v2._component import private_component_key
 
@@ -66,6 +67,20 @@ class FakeApi:
 
 @pytest.fixture
 def ui(monkeypatch):
+    # AppTest currently omits V2 widgets from the browser state snapshot.
+    # Include their persistent cells so reruns exercise real tab/input retention.
+    original_widget_state = element_tree.get_widget_state
+
+    def widget_state(node):
+        if getattr(node, "type", None) == "bidi_component":
+            state = node.root.session_state[node.proto.id]
+            return WidgetState(
+                id=node.proto.id,
+                json_value=json.dumps({k: v for k, v in state.items() if k in {"meta", "state"}}),
+            )
+        return original_widget_state(node)
+
+    monkeypatch.setattr(element_tree, "get_widget_state", widget_state)
     api = FakeApi()
     config = NS(
         ui_password=SecretStr("ui-test-password"),
@@ -104,10 +119,33 @@ def mount_key(key):
 
 
 def component(app, key):
-    native = next((b for b in app.button if b.key == key), None)
+    native = next((b for b in [*app.button, *app.text_input] if b.key == key), None)
     if native is not None:
         return native
-    return next(e for e in app.get("bidi_component") if e.proto.id.endswith("-" + mount_key(key)))
+    for root in app.get("bidi_component"):
+        if root.proto.id.endswith("-" + mount_key(key)):
+            return root
+        data = json.loads(root.proto.json)
+        for node in element_nodes(data.get("props", {}).get("nodes", [])):
+            if node["id"].split("/")[-1] == key:
+                return NS(
+                    proto=NS(id=root.proto.id, json=json.dumps({"props": node["props"]})),
+                    node_id=node["id"],
+                )
+    raise StopIteration(key)
+
+
+def element_nodes(nodes):
+    for node in nodes:
+        yield node
+        yield from element_nodes(node.get("children", []))
+
+
+def rendered_chat_nodes(app):
+    for root in app.get("bidi_component"):
+        data = json.loads(root.proto.json)
+        if data["kind"] == "elements":
+            yield from element_nodes(data["props"]["nodes"])
 
 
 def has_component(app, key):
@@ -119,6 +157,10 @@ def has_component(app, key):
 
 
 def set_value(app, key, value):
+    native = next((field for field in app.text_input if field.key == key), None)
+    if native is not None:
+        native.set_value(value)
+        return
     data = json.loads(component(app, key).proto.json)
     state = dict(data["state"])
     if data["kind"] == "tabs":
@@ -129,7 +171,11 @@ def set_value(app, key, value):
 
 def trigger(app, key, event, value):
     states = app._tree.get_widget_states()
-    widget = states.widgets.add(id=_make_trigger_id(component(app, key).proto.id, "events"))
+    target = component(app, key)
+    if getattr(target, "node_id", None):
+        value = [{"nodeId": target.node_id, "type": event, "sequence": 1}]
+        event = "events"
+    widget = states.widgets.add(id=_make_trigger_id(target.proto.id, "events"))
     widget.json_trigger_value = json.dumps([{"event": event, "value": value}])
     app._run(states)
 
@@ -400,7 +446,7 @@ def test_create_validation_and_cancel_clear_token(ui):
 def test_operator_logout_clears_authentication(ui):
     app, api = ui
     sign_in(app)
-    assert mount_key("operator_password") not in app.session_state
+    assert "operator_password" not in app.session_state
     click(app, "operator_logout")
     assert "authenticated" not in app.session_state
     assert component(app, "operator_password")
@@ -442,7 +488,11 @@ def test_rejected_create_keeps_dialog_and_renders_empty_token(ui):
 
     api.request = reject
     click(
-        app, "create_submit", create_name="New", create_phone="+123", create_token="synthetic-token"
+        app,
+        "create_submit",
+        create_name="New",
+        create_phone="+1234567890",
+        create_token="synthetic-token",
     )
     app.run()
     assert app.session_state["creating_account"]
@@ -459,7 +509,11 @@ def test_open_create_disables_submit_during_outage(ui):
     app.run()
     assert is_disabled(app, "create_submit")
     click(
-        app, "create_submit", create_name="New", create_phone="+123", create_token="synthetic-token"
+        app,
+        "create_submit",
+        create_name="New",
+        create_phone="+1234567890",
+        create_token="synthetic-token",
     )
     assert not api.calls
     assert app.session_state["creating_account"]
@@ -561,7 +615,9 @@ def test_saved_topic_title_after_new_ui_session(ui):
     api.get = get
     sign_in(app)
     select_tab(app, "Чаты MAX")
-    assert any("Анна (бывший ГБ ИП Олешко)" in m.value for m in app.markdown)
+    assert any(
+        n["props"].get("text") == "Анна (бывший ГБ ИП Олешко)" for n in rendered_chat_nodes(app)
+    )
 
 
 def test_chat_list_search_without_pagination_or_button_iframes(ui):
@@ -584,11 +640,87 @@ def test_chat_list_search_without_pagination_or_button_iframes(ui):
         e.proto.id.rsplit("-", 1)[-1].startswith(("topic_", "rename_", "mute_"))
         for e in app.get("component_instance")
     )
-    assert len([b for b in app.button if b.key.startswith("mute_")]) == 200
-    assert len([b for b in app.button if b.key.startswith("topic_")]) == 100
-    assert len([b for b in app.button if b.key.startswith("rename_")]) == 100
+    roots = [json.loads(e.proto.json) for e in app.get("bidi_component")]
+    assert sum(r["kind"] == "elements" for r in roots) == 4
+    assert all(
+        len(list(element_nodes(r["props"]["nodes"]))) <= 1000
+        for r in roots
+        if r["kind"] == "elements"
+    )
+    buttons = [n["props"] for n in rendered_chat_nodes(app) if n["type"] == "button"]
+    assert sum(b["text"] == "Mute" for b in buttons) == 200
+    assert sum(b["text"] == "Создать Topic" for b in buttons) == 100
+    assert sum(b["text"] == "Переименовать" for b in buttons) == 100
+    assert all(b["variant"] == "secondary" for b in buttons if b["text"] == "Mute")
+    assert all(b["variant"] == "outline" for b in buttons if b["text"] != "Mute")
     assert not any(s.key.startswith("chat_page_") for s in app.selectbox)
     set_value(app, "tabs_1", "Чаты MAX")
     app.text_input(key="chat_search_1").set_value("Chat 200").run()
-    rows = [b for b in app.button if b.key.startswith("rename_")]
-    assert len(rows) == 1 and rows[0].key == "rename_200"
+    assert has_component(app, "rename_200")
+    assert not has_component(app, "rename_2")
+
+
+def test_last_chat_actions_and_inline_rename_across_batches(ui):
+    app, api = ui
+    original = api.get
+
+    def get(path):
+        result = original(path)
+        if path.endswith("/chats"):
+            return [dict(result[0], id=i, max_title=f"Chat {i}") for i in range(1, 52)]
+        return result
+
+    api.get = get
+    sign_in(app)
+    select_tab(app, "Чаты MAX")
+    click(app, "rename_51", tabs_1="Чаты MAX")
+    assert has_component(app, "rename_value_51")
+    click(app, "rename_save_51", rename_value_51="Last chat title")
+    assert api.calls == [("PATCH", "/accounts/1/chats/51/topic", {"name": "Last chat title"})]
+    click(app, "mute_51")
+    assert api.calls[-1] == ("POST", "/accounts/1/chats/51/mute", None)
+    app.run()
+    assert len(api.calls) == 2
+
+
+def test_create_invalid_phone_explains_format(ui):
+    app, api = ui
+    sign_in(app, open_account=False)
+    click(app, "create_open")
+    click(
+        app,
+        "create_submit",
+        create_name="111",
+        create_phone="111",
+        create_token="111",
+        create_owner="111",
+    )
+    assert any("Телефон MAX" in e.value and "+" in e.value for e in app.error)
+    assert not api.calls
+
+
+def test_topics_disabled_error_is_actionable():
+    def rejected(request, timeout):
+        raise HTTPError(
+            "http://fake", 400, "Bad Request", {}, io.BytesIO(b"Bot requires has_topics_enabled")
+        )
+
+    client = InternalApiClient("http://fake", "dummy", transport=rejected)
+    with pytest.raises(ApiRejected, match="BotFather"):
+        client.request("POST", "/accounts", {})
+
+
+def test_create_error_survives_refresh(ui):
+    app, api = ui
+    sign_in(app, open_account=False)
+    click(app, "create_open")
+
+    def reject(*args):
+        raise ApiRejected("Включите Topics в BotFather")
+
+    api.request = reject
+    click(
+        app, "create_submit", create_name="111", create_phone="+79181111111", create_token="dummy"
+    )
+    app.run()
+    assert any("BotFather" in e.value for e in app.error)

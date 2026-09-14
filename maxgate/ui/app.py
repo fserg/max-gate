@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import re
 from datetime import UTC, datetime
 from html import escape
 
@@ -21,6 +22,7 @@ STATES = {
 }
 CSS = """
 <style>
+html,body,#root {height:100%;overflow:hidden}
 :root {font-family:Inter,system-ui,sans-serif;color:#09090b}
 .stApp,.stApp p,.stApp h1,.stApp h3,.stApp label {font-family:Inter,system-ui,sans-serif!important}
 .stApp p {font-size:14px!important}
@@ -28,10 +30,6 @@ CSS = """
 .stElementContainer:has(> [data-testid="stMarkdown"] style) {display:none}
 [class*="st-key-field_"] {gap:6px!important}
 .stApp [data-testid="stHeadingWithActionElements"] a {display:none}
-[class*="st-key-account_row_"] [data-testid="stHorizontalBlock"] {flex-wrap:nowrap;align-items:center;gap:8px}
-[class*="st-key-account_row_"] [data-testid="stColumn"] {min-width:0!important}
-[class*="st-key-account_row_"] [data-testid="stColumn"]:first-child {flex:1 1 70%!important;width:70%!important}
-[class*="st-key-account_row_"] [data-testid="stColumn"]:last-child {flex:0 0 auto!important;width:auto!important}
 .st-key-topbar {height:56px}
 [data-testid="stLayoutWrapper"]:has(> .st-key-topbar) {position:sticky;top:0;z-index:99;background:white}
 [data-testid="stAppViewContainer"] {background:white}
@@ -56,6 +54,15 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 .active {background:#dcfce7;color:#166534}.logging_in,.password_required,.warning {background:#fef3c7;color:#92400e}
 .session_lost,.error {background:#fee2e2;color:#991b1b}.topic {background:#e0e7ff;color:#3730a3}.muted {background:#18181b;color:white}
 .account-title {display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+/* The native button covers the card, retaining keyboard focus and its accessible name. */
+[class*="st-key-account_tile_"] {position:relative;gap:0!important;padding:16px!important;min-height:96px;transition:border-color .15s,box-shadow .15s}
+[class*="st-key-account_tile_"]:hover {border-color:#a1a1aa!important;box-shadow:0 2px 5px #00000010}
+[class*="st-key-account_tile_"] .stElementContainer:has([data-testid="stButton"]) {position:absolute;inset:0;width:100%!important;height:100%!important;z-index:1}
+[class*="st-key-account_tile_"] [data-testid="stButton"] {height:100%}
+[class*="st-key-account_tile_"] button {width:100%;height:100%;background:transparent!important;border:0!important;border-radius:8px;color:transparent!important}
+[class*="st-key-account_tile_"] button:focus-visible {outline:2px solid #18181b;outline-offset:3px}
+.account-tile-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.account-tile-heading strong {overflow-wrap:anywhere}
 .st-key-danger {border-color:#fecaca!important}
 .st-key-login_panel {max-width:380px;margin:18vh auto 0;padding:28px 24px;border-radius:12px!important;background:white}
 [data-testid="stAppViewContainer"]:has(.st-key-login_panel) {background:#fafafa}
@@ -78,17 +85,6 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 .st-key-topbar [data-testid="stColumn"]:first-child {flex:1 1 auto!important;width:auto!important}
 .st-key-topbar [data-testid="stColumn"]:nth-child(2) {flex:0 0 auto!important;width:max-content!important;margin-left:auto}
 .st-key-topbar [data-testid="stColumn"]:last-child {flex:0 0 80px!important;width:80px!important}
-[class*="st-key-account_row_"] button p {white-space:pre-line;text-align:left}
-/* Keep chat actions together when the row wraps on narrow screens. */
-[class*="st-key-chat_row_"] {padding:12px 0;border-bottom:1px solid #f4f4f5}
-[data-testid="stLayoutWrapper"]:last-child > [class*="st-key-chat_row_"] {border-bottom:0}
-[class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {flex-wrap:wrap;align-items:center;gap:8px}
-[class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {flex:1 1 240px!important;min-width:0!important;width:auto!important;overflow-wrap:anywhere}
-[class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {flex:0 0 244px!important;min-width:0!important;width:244px!important;margin-left:auto}
-[class*="st-key-chat_row_"] [data-testid="stColumn"]:last-child:not(:has([class*="st-key-topic_"],[class*="st-key-rename_"])) {flex-basis:86px!important;width:86px!important}
-[class*="st-key-chat_actions_"] > :is([class*="st-key-topic_"],[class*="st-key-rename_"]) {flex:0 0 150px!important;width:150px!important}
-[class*="st-key-chat_actions_"] > [class*="st-key-mute_"] {flex:0 0 86px!important;width:86px!important}
-[class*="st-key-chat_actions_"] {gap:8px!important;flex-wrap:nowrap!important;justify-content:flex-end}
 [class*="st-key-rename_form_actions_"] {gap:8px!important;flex-wrap:nowrap!important;justify-content:flex-end}
 [class*="st-key-rename_form_actions_"] > [class*="st-key-rename_save_"] {flex:0 0 112px!important;width:112px!important}
 [class*="st-key-rename_form_actions_"] > [class*="st-key-rename_cancel_"] {flex:0 0 96px!important;width:96px!important}
@@ -149,8 +145,14 @@ def login(settings):
     with st.container(border=True, key="login_panel"):
         markup('<div class="brand"><span class="logo">↔</span>Max-gate</div>')
         st.caption("Вход для Operator")
-        supplied = field("Пароль Operator", "operator_password", secret=True)
-        if button("Войти", "operator_login", width="stretch"):
+        revision = st.session_state.get("revision_operator_password", 0)
+        password_key = f"operator_password_{revision}" if revision else "operator_password"
+        with st.form("operator_login_form", border=False, enter_to_submit=True):
+            supplied = st.text_input("Пароль Operator", key=password_key, type="password")
+            submitted = st.form_submit_button(
+                "Войти", key="operator_login", type="primary", width="stretch"
+            )
+        if submitted:
             clear_field("operator_password")
             if hmac.compare_digest(supplied.encode(), expected.encode()):
                 st.session_state["authenticated"] = password_fingerprint(expected)
@@ -164,11 +166,13 @@ def login(settings):
     return False
 
 
-def invoke(client, method, path, data=None, *, clear_keys=()):
+def invoke(client, method, path, data=None, *, clear_keys=(), error_key=None):
     st.session_state["_clear_keys"] = list(clear_keys)
     try:
         client.request(method, path, data)
     except (ApiUnavailable, ApiRejected) as exc:
+        if error_key:
+            st.session_state[error_key] = str(exc)
         st.error(str(exc))
         st.stop()
     st.session_state["notice"] = "Операция принята Gate"
@@ -221,11 +225,12 @@ def inbox_mode(key, default="private"):
 
 
 def close_create():
+    st.session_state.pop("create_error", None)
     st.session_state.pop("creating_account", None)
     clear_field("create_token")
 
 
-@st.dialog("Создать Account", width="small", on_dismiss=close_create)
+@st.dialog("Создать учетку", width="small", on_dismiss=close_create)
 def create_account(client, *, disabled=False):
     disabled = disabled or st.session_state.get("bridge_unavailable", False)
     st.caption("Один аккаунт MAX + один Telegram-бот, принадлежащие одному Owner.")
@@ -233,7 +238,7 @@ def create_account(client, *, disabled=False):
     name = field("Название", "create_name", placeholder="напр. Отдел продаж")
     phone = field("Телефон MAX", "create_phone", placeholder="+7…")
     token = field("Токен Telegram-бота", "create_token", secret=True)
-    st.caption("Один бот — один Account. Для private Inbox включите Topics у бота в BotFather.")
+    st.caption("Один бот — одна учетка. Для private Inbox включите Topics у бота в BotFather.")
     owner = field("Telegram id Owner", "create_owner", "79652610")
     mode = inbox_mode("create_mode")
     channels = ui.switch(label="Переносить Channel", key="create_channels")
@@ -246,8 +251,13 @@ def create_account(client, *, disabled=False):
     with right:
         submitted = button("Создать", "create_submit", disabled=disabled)
     if submitted:
+        st.session_state.pop("create_error", None)
         if not name.strip() or not phone.strip() or not token.strip():
-            st.error("Заполните название, телефон и токен бота")
+            st.session_state["create_error"] = "Заполните название, телефон и токен бота"
+        elif not re.fullmatch(r"\+\d{7,15}", phone.strip()):
+            st.session_state["create_error"] = (
+                "Телефон MAX: введите + и от 7 до 15 цифр, например +79991234567."
+            )
         elif (parsed_owner := owner_id(owner)) is not None:
             invoke(
                 client,
@@ -262,17 +272,21 @@ def create_account(client, *, disabled=False):
                     relay_channels=channels,
                 ),
                 clear_keys=("create_token",),
+                error_key="create_error",
             )
+
+    if error := st.session_state.get("create_error"):
+        st.error(error)
 
 
 def confirm_action(client, account_id, action, clicked, *, disabled=False):
     titles = {
-        "delete": "Удалить Account",
+        "delete": "Удалить учетку",
         "logout": "Удалить Session",
         "login_again": "Войти заново",
     }
     descriptions = {
-        "delete": "Account и его данные будут удалены из Gate. Topic в Telegram останутся.",
+        "delete": "Учетка и её данные будут удалены из Gate. Topic в Telegram останутся.",
         "logout": "Session будет удалена. Для входа в MAX потребуются новый код SMS и пароль 2FA.",
         "login_again": "Текущая Session будет заменена. Потребуются новый код SMS и пароль 2FA.",
     }
@@ -388,7 +402,7 @@ def account_settings(client, account, *, disabled=False):
 
         columns = st.columns(4)
         with columns[0]:
-            name = field("Название Account", f"name_{account_id}", account["name"])
+            name = field("Название учетки", f"name_{account_id}", account["name"])
         with columns[1]:
             owner = field("Owner · Telegram id", f"owner_{account_id}", account["owner_tg_user_id"])
         with columns[2]:
@@ -416,11 +430,11 @@ def account_settings(client, account, *, disabled=False):
     with st.container(border=True, key="danger"):
         left, right = st.columns([3, 1])
         with left:
-            st.subheader("Удаление Account")
-            st.caption("Account и его данные будут удалены из Gate. Topic в Telegram останутся.")
+            st.subheader("Удаление учетки")
+            st.caption("Учетка и её данные будут удалены из Gate. Topic в Telegram останутся.")
         with right:
             clicked = button(
-                "Удалить Account",
+                "Удалить учетку",
                 f"delete_{account_id}",
                 variant="destructive",
                 width="stretch",
@@ -449,80 +463,80 @@ def chat_links(client, account, chats, *, disabled=False):
             ).casefold()
         ]
         st.caption(f"Найдено: {len(filtered)}")
+        # Keep each Elements tree below its 1,000-node limit. All batches stay
+        # visible; batching is a rendering detail, not pagination.
+        batch = []
+        renaming = st.session_state.get("renaming_topic")
         for link in filtered:
-            with st.container(key=f"chat_row_{link['id']}"):
-                label, actions = st.columns([1, 1])
-                with label:
-                    title = escape(
-                        str(link.get("topic_title") or link["max_title"] or link["max_chat_id"])
-                    )
-                    markup(
-                        f'<div style="opacity:{0.55 if link["muted"] else 1};font-weight:500">{title}</div>'
-                    )
-                    kind = {"DIALOG": "Dialog", "CHAT": "Group", "CHANNEL": "Channel"}.get(
-                        link["max_chat_type"], link["max_chat_type"]
-                    )
-                    markup(
-                        badge(kind)
-                        + " "
-                        + badge(
-                            f"Topic {link['topic_id']}"
-                            if link["topic_id"] is not None
-                            else "нет Topic",
-                            "topic" if link["topic_id"] is not None else "",
+            batch.append(link)
+            if len(batch) == 50 or renaming == (account["id"], link["id"]):
+                chat_batch(client, account, batch, disabled=disabled)
+                batch = []
+        if batch:
+            chat_batch(client, account, batch, disabled=disabled)
+
+
+def chat_batch(client, account, chats, *, disabled=False):
+    actions = []
+    with ui.elements(key=f"chat_batch_{account['id']}_{chats[0]['id']}") as el:
+        for link in chats:
+            link_id = link["id"]
+            with el.stack(key=f"chat_{link_id}", gap="sm"):
+                with el.grid(columns=2, min_column_width=240, gap="sm"):
+                    with el.stack(gap="xs"):
+                        el.text(
+                            str(
+                                link.get("topic_title") or link["max_title"] or link["max_chat_id"]
+                            ),
+                            variant="muted" if link["muted"] else "label",
                         )
-                        + (" " + badge("Muted", "muted") if link["muted"] else "")
-                    )
-                with actions:
-                    with st.container(
-                        key=f"chat_actions_{link['id']}",
-                        horizontal=True,
-                        horizontal_alignment="right",
-                        gap="small",
-                    ):
-                        if link["topic_id"] is None and st.button(
-                            "Создать Topic",
-                            key=f"topic_{link['id']}",
-                            type="secondary",
-                            width="stretch",
-                            disabled=disabled,
-                        ):
-                            if account["inbox_chat_id"] is None:
-                                st.error(
-                                    "Сначала подключите Inbox: Owner должен отправить /start боту."
-                                )
-                            else:
-                                invoke(
-                                    client,
-                                    "POST",
-                                    f"/accounts/{account['id']}/chats/{link['id']}/topic",
-                                )
-                        if link["topic_id"] is not None and st.button(
-                            "Переименовать",
-                            key=f"rename_{link['id']}",
-                            type="secondary",
-                            width="stretch",
-                            disabled=disabled,
-                        ):
-                            st.session_state["renaming_topic"] = (account["id"], link["id"])
-                        if st.button(
-                            "Unmute" if link["muted"] else "Mute",
-                            key=f"mute_{link['id']}",
-                            type="secondary",
-                            width="stretch",
-                            disabled=disabled,
-                        ):
-                            verb = "unmute" if link["muted"] else "mute"
-                            invoke(
-                                client,
-                                "POST",
-                                f"/accounts/{account['id']}/chats/{link['id']}/{verb}",
+                        kind = {"DIALOG": "Dialog", "CHAT": "Group", "CHANNEL": "Channel"}.get(
+                            link["max_chat_type"], link["max_chat_type"]
+                        )
+                        with el.stack(direction="horizontal", gap="xs", wrap=True):
+                            el.badge(kind, variant="secondary")
+                            el.badge(
+                                f"Topic {link['topic_id']}"
+                                if link["topic_id"] is not None
+                                else "нет Topic",
+                                variant="default" if link["topic_id"] is not None else "outline",
                             )
-                if link["topic_id"] is not None and st.session_state.get("renaming_topic") == (
-                    account["id"],
-                    link["id"],
-                ):
-                    rename_topic_form(client, account, link, disabled=disabled)
+                            if link["muted"]:
+                                el.badge("Muted", variant="secondary")
+                    with el.stack(direction="horizontal", gap="sm", align="center", justify="end"):
+                        verb = "topic" if link["topic_id"] is None else "rename"
+                        primary = el.button(
+                            "Создать Topic" if verb == "topic" else "Переименовать",
+                            key=f"{verb}_{link_id}",
+                            variant="outline",
+                            disabled=disabled,
+                        )
+                        mute = el.button(
+                            "Unmute" if link["muted"] else "Mute",
+                            key=f"mute_{link_id}",
+                            variant="secondary",
+                            disabled=disabled,
+                        )
+                        actions.append((link, verb, primary, mute))
+                el.separator()
+    for link, verb, primary, mute in actions:
+        if primary.clicked and not disabled:
+            if verb == "rename":
+                st.session_state["renaming_topic"] = (account["id"], link["id"])
+                st.rerun()
+            elif account["inbox_chat_id"] is None:
+                st.error("Сначала подключите Inbox: Owner должен отправить /start боту.")
+            else:
+                invoke(client, "POST", f"/accounts/{account['id']}/chats/{link['id']}/topic")
+        if mute.clicked and not disabled:
+            verb = "unmute" if link["muted"] else "mute"
+            invoke(client, "POST", f"/accounts/{account['id']}/chats/{link['id']}/{verb}")
+    last = chats[-1]
+    if last["topic_id"] is not None and st.session_state.get("renaming_topic") == (
+        account["id"],
+        last["id"],
+    ):
+        rename_topic_form(client, account, last, disabled=disabled)
 
 
 def rename_topic_form(client, account, link, *, disabled=False):
@@ -565,7 +579,7 @@ def rename_topic_form(client, account, link, *, disabled=False):
 
 def journal(events):
     with st.container(border=True):
-        st.subheader("Журнал Account")
+        st.subheader("Журнал учетки")
         st.caption("Последние 1000 записей · содержимое сообщений не логируется")
         rows = []
         for event in events:
@@ -584,7 +598,7 @@ def journal(events):
 def account_card(client, account, events, chats, *, disabled=False):
     account_id, state = account["id"], account["state"]
     path = f"/accounts/{account_id}"
-    if button("← Все Account", f"back_{account_id}", variant="ghost"):
+    if button("← Все учетки", f"back_{account_id}", variant="ghost"):
         st.session_state.pop("selected_account", None)
         st.rerun()
     with st.container(key="account_heading"):
@@ -594,7 +608,7 @@ def account_card(client, account, events, chats, *, disabled=False):
                 f'<div class="account-title"><h1>{escape(account["name"])}</h1>{badge(STATES[state], state)}</div>'
             )
             st.caption(
-                f"Account #{account_id} · MAX {account['phone']} · Inbox {account['inbox_chat_id'] or 'ещё не подключён'} · {account['inbox_mode']}"
+                f"Учетка #{account_id} · MAX {account['phone']} · Inbox {account['inbox_chat_id'] or 'ещё не подключён'} · {account['inbox_mode']}"
             )
         with right, st.container(key="actions"):
             actions = st.columns([1.5 if state == "paused" else 1, 1.6, 0.8])
@@ -706,10 +720,10 @@ def dashboard(client):
     st.session_state.pop("selected_account", None)
     title, create = st.columns([4, 1])
     with title:
-        st.title("Account")
+        st.title("Учетки")
         st.caption("MAX ↔ Telegram · обновляется каждые 2 с")
     with create:
-        if button("+ Создать Account", "create_open", disabled=disabled):
+        if button("+ Создать учетку", "create_open", disabled=disabled):
             st.session_state["creating_account"] = True
     if st.session_state.get("creating_account"):
         create_account(client, disabled=disabled)
@@ -725,26 +739,23 @@ def dashboard(client):
     for index, (label, value) in enumerate(metrics):
         with columns[index]:
             ui.metric_card(label, value, key=f"metric_{index}")
-    with st.container(border=True):
-        st.subheader("Все Account")
-        st.caption("Нажмите на строку, чтобы открыть карточку")
-        for account in accounts:
-            account_id = account["id"]
-            row_container = st.container(key=f"account_row_{account_id}")
-            row, status = row_container.columns([4, 1])
-            with row:
-                if st.button(
-                    f"{account['name']}  #{account_id}\n{account['phone']} · Inbox {account['inbox_chat_id'] or 'ещё не подключён'}  ›",
-                    key=f"open_{account_id}",
-                    type="tertiary",
-                    width="stretch",
-                ):
+    st.subheader("Все учетки")
+    if not accounts:
+        st.caption("Учеток пока нет")
+        return
+    for start in range(0, len(accounts), 2):
+        columns = st.columns(2)
+        for column, account in zip(columns, accounts[start : start + 2], strict=False):
+            account_id, state = account["id"], account["state"]
+            with column, st.container(border=True, key=f"account_tile_{account_id}"):
+                markup(
+                    '<div class="account-tile-heading">'
+                    f"<strong>{escape(account['name'])}</strong>{badge(STATES[state], state)}</div>"
+                    f'<div class="subtle">{escape(account["phone"])}</div>'
+                )
+                if st.button(account["name"], key=f"open_{account_id}", width="stretch"):
                     st.session_state["selected_account"] = account_id
                     st.rerun()
-            with status:
-                markup(badge(STATES[account["state"]], account["state"]))
-        if not accounts:
-            st.caption("Account пока нет")
 
 
 def main():
