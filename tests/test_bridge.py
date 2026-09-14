@@ -362,3 +362,143 @@ async def test_topic_endpoint_bound_inbox_idempotency_and_scope(storage, tmp_pat
         for r in api.app.router.routes()
     )
     await supervisor.close()
+
+
+@pytest.mark.parametrize(
+    "case", ["success", "no_topic", "telegram_error", "wrong_account", "empty", "long"]
+)
+async def test_rename_topic_endpoint(storage, tmp_path, case):
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import EditForumTopic
+    from aiohttp.test_utils import TestClient, TestServer
+
+    _, sessions, crypto = storage
+    supervisor = Supervisor(sessions, crypto, NS(data_dir=tmp_path))
+    await supervisor.storage.update(1, inbox_chat_id=100)
+    store = RelayStorage(1, sessions)
+    link = await store.ensure_chat(10, "CHAT", "MAX title", 0)
+    if case != "no_topic":
+        await store.change_chat(link.id, topic_id=77)
+    bot = NS(edit_forum_topic=AsyncMock(), session=NS(close=AsyncMock()))
+    if case == "telegram_error":
+        bot.edit_forum_topic.side_effect = TelegramBadRequest(
+            method=EditForumTopic(chat_id=100, message_thread_id=77), message="secret-token"
+        )
+    api = InternalApi(supervisor, "fake", bot_factory=lambda _: bot)
+    account_id = 2 if case == "wrong_account" else 1
+    title = "   " if case == "empty" else "x" * 129 if case == "long" else "  Моё название  "
+    async with TestClient(TestServer(api.app)) as client:
+        response = await client.patch(
+            f"/accounts/{account_id}/chats/{link.id}/topic",
+            json={"name": title},
+            headers={"Authorization": "Bearer fake"},
+        )
+        expected = {
+            "success": 200,
+            "no_topic": 400,
+            "telegram_error": 502,
+            "wrong_account": 404,
+            "empty": 400,
+            "long": 400,
+        }[case]
+        assert response.status == expected
+        assert "secret-token" not in await response.text()
+        response = await client.get("/accounts/1/chats", headers={"Authorization": "Bearer fake"})
+        updated = (await response.json())[0]
+        assert updated["renamed_by_owner"] == (case == "success")
+        assert updated["max_title"] == "MAX title"
+    if case == "success":
+        bot.edit_forum_topic.assert_awaited_once_with(
+            chat_id=100, message_thread_id=77, name="Моё название"
+        )
+    elif case != "telegram_error":
+        bot.edit_forum_topic.assert_not_awaited()
+    await supervisor.close()
+
+
+async def test_ui_rename_serializes_with_max_title_change_and_service_event(storage, tmp_path):
+    from datetime import UTC, datetime
+
+    from aiogram.types import Message
+
+    from maxgate.relay.engine import RelayEngine
+    from maxgate.relay.queue import ChatQueues
+    from maxgate.tg.bot import TgBot
+
+    _, sessions, crypto = storage
+    supervisor = Supervisor(sessions, crypto, NS(data_dir=tmp_path))
+    await supervisor.storage.update(1, inbox_chat_id=100)
+    account = await supervisor.storage.get(1)
+    store = RelayStorage(1, sessions)
+    link = await store.ensure_chat(10, "CHAT", "Old", 0)
+    await store.change_chat(link.id, topic_id=77)
+    entered, release = asyncio.Event(), asyncio.Event()
+    titles = []
+
+    async def edit(**kwargs):
+        titles.append(kwargs["name"])
+        if kwargs["name"] == "Mine":
+            entered.set()
+            await release.wait()
+
+    bot = NS(edit_forum_topic=AsyncMock(side_effect=edit), session=NS(close=AsyncMock()))
+    tg = TgBot("", account, sessions, bot=bot)
+    relay = RelayEngine(
+        account,
+        sessions,
+        NS(),
+        tg,
+        tmp_path,
+        AsyncMock(),
+        queues=ChatQueues(sleep=lambda _: asyncio.sleep(0)),
+    )
+    relay.topic_locks = supervisor.topic_locks
+    tg.on_topic_edited = relay.topic_edited
+    api = InternalApi(supervisor, "fake", bot_factory=lambda _: bot)
+    req = NS(
+        match_info={"id": "1", "link_id": str(link.id)},
+        json=AsyncMock(return_value={"name": "Mine"}),
+    )
+    task = asyncio.create_task(api.rename_topic(req))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await relay.chat_update(NS(id=10, title="New MAX title"))
+        # Drain a queued MAX update while the UI call is still awaiting Telegram.
+        try:
+            await asyncio.wait_for(asyncio.shield(relay.queues.drain()), 0.1)
+        except TimeoutError:
+            pass
+        release.set()
+        assert (await task).status == 200
+        await relay.queues.drain()
+        assert titles == ["Mine"]
+        update = Message(
+            message_id=1,
+            date=datetime.now(UTC),
+            chat={"id": 100, "type": "private"},
+            message_thread_id=77,
+            forum_topic_edited={"name": "Mine"},
+        )
+        await tg._message(update)
+        assert (await store.chat(link_id=link.id)).renamed_by_owner
+        assert (await store.chat(link_id=link.id)).max_title == "New MAX title"
+        # Automatic edits are still ignored; an Owner's subsequent edit is recognized.
+        await store.change_chat(link.id, renamed_by_owner=False)
+        await tg.edit_topic(77, "Automatic")
+        await tg._message(
+            update.model_copy(
+                update={
+                    "forum_topic_edited": update.forum_topic_edited.model_copy(
+                        update={"name": "Automatic"}
+                    )
+                }
+            )
+        )
+        assert not (await store.chat(link_id=link.id)).renamed_by_owner
+        await tg._message(update)
+        assert (await store.chat(link_id=link.id)).renamed_by_owner
+    finally:
+        release.set()
+        await task
+        await relay.close(timeout=0.2)
+        await supervisor.close()

@@ -449,3 +449,68 @@ def test_journal_has_one_escaped_markup_block(ui):
     assert len(rows) == 1
     assert rows[0].count('<div class="event">') == 1000
     assert "&lt;b&gt;999&lt;/b&gt;" in rows[0]
+
+
+def test_rename_topic_from_chat_row(ui):
+    app, api = ui
+    sign_in(app)
+    select_tab(app, "Чаты MAX")
+    click(app, "rename_1", tabs_1="Чаты MAX")
+    click(app, "rename_save_1", tabs_1="Чаты MAX", rename_value_1="  Моё название  ")
+    assert api.calls == [("PATCH", "/accounts/1/chats/1/topic", {"name": "Моё название"})]
+    select_tab(app, "Чаты MAX")
+    assert len(api.calls) == 1
+
+
+def test_rename_topic_validation_cancel_and_safe_error(ui):
+    app, api = ui
+    sign_in(app)
+    select_tab(app, "Чаты MAX")
+    click(app, "rename_1", tabs_1="Чаты MAX")
+    click(app, "rename_save_1", tabs_1="Чаты MAX", rename_value_1="   ")
+    assert any("от 1 до 128" in e.value for e in app.error)
+    assert not api.calls
+    click(app, "rename_cancel_1", tabs_1="Чаты MAX")
+    select_tab(app, "Чаты MAX")
+    assert not any(e.proto.id.endswith("-rename_save_1") for e in app.get("component_instance"))
+    click(app, "rename_1", tabs_1="Чаты MAX")
+
+    def rejected(*_):
+        raise ApiRejected("Telegram не смог переименовать Topic. Попробуйте позже.")
+
+    api.request = rejected
+    click(app, "rename_save_1", tabs_1="Чаты MAX", rename_value_1_1="Моё название")
+    assert any("Telegram не смог" in e.value for e in app.error)
+
+
+def test_no_rename_without_topic_or_when_bridge_unavailable(ui):
+    app, api = ui
+    sign_in(app)
+    select_tab(app, "Чаты MAX")
+    api.available = False
+    select_tab(app, "Чаты MAX")
+    assert is_disabled(app, "rename_1")
+    click(app, "rename_1", tabs_1="Чаты MAX")
+    assert not api.calls
+    api.available = True
+    original_get = api.get
+
+    def get(path):
+        data = original_get(path)
+        if path.endswith("/chats"):
+            data[0]["topic_id"] = None
+        return data
+
+    api.get = get
+    select_tab(app, "Чаты MAX")
+    assert not any(e.proto.id.endswith("-rename_1") for e in app.get("component_instance"))
+
+
+def test_rename_api_error_does_not_expose_response_or_credentials():
+    def rejected(*_, **kwargs):
+        raise HTTPError("http://fake", 502, "secret-token", {}, io.BytesIO(b"secret-token"))
+
+    client = InternalApiClient("http://fake", "secret-token", transport=rejected)
+    with pytest.raises(ApiRejected, match="Telegram не смог переименовать Topic") as error:
+        client.patch("/accounts/1/chats/1/topic", {"name": "Title"})
+    assert "secret-token" not in str(error.value)

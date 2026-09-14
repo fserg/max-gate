@@ -99,10 +99,13 @@ h3 {font-size:16px!important;font-weight:600!important;padding:0!important}
 [class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {flex-wrap:wrap;align-items:center;gap:8px}
 [class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {flex:1 1 240px!important;min-width:0!important;width:auto!important;overflow-wrap:anywhere}
 [class*="st-key-chat_row_"] > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {flex:0 0 228px!important;min-width:0!important;width:228px!important;margin-left:auto}
-[class*="st-key-chat_row_"] [data-testid="stColumn"]:last-child:not(:has([class*="st-key-topic_"])) {flex-basis:86px!important;width:86px!important}
-[class*="st-key-chat_actions_"] > [class*="st-key-topic_"] {flex:0 0 134px!important;width:134px!important}
+[class*="st-key-chat_row_"] [data-testid="stColumn"]:last-child:not(:has([class*="st-key-topic_"],[class*="st-key-rename_"])) {flex-basis:86px!important;width:86px!important}
+[class*="st-key-chat_actions_"] > :is([class*="st-key-topic_"],[class*="st-key-rename_"]) {flex:0 0 134px!important;width:134px!important}
 [class*="st-key-chat_actions_"] > [class*="st-key-mute_"] {flex:0 0 86px!important;width:86px!important}
 [class*="st-key-chat_actions_"] {gap:8px!important;flex-wrap:nowrap!important;justify-content:flex-end}
+[class*="st-key-rename_form_actions_"] {gap:8px!important;flex-wrap:nowrap!important;justify-content:flex-end}
+[class*="st-key-rename_form_actions_"] > [class*="st-key-rename_save_"] {flex:0 0 112px!important;width:112px!important}
+[class*="st-key-rename_form_actions_"] > [class*="st-key-rename_cancel_"] {flex:0 0 96px!important;width:96px!important}
 .event {display:grid;grid-template-columns:110px 80px minmax(0,1fr);gap:12px;padding:12px 0;border-bottom:1px solid #f4f4f5;font-size:13px}
 .event code {white-space:pre-wrap;overflow-wrap:anywhere;color:#3f3f46;font-size:12.5px;background:none}
 .event small {color:#a1a1aa}.event .badge {font-size:11px}
@@ -503,7 +506,7 @@ def chat_links(client, account, chats, *, disabled=False):
                         if link["topic_id"] is None and button(
                             "Создать Topic",
                             f"topic_{link['id']}",
-                            variant="outline",
+                            variant="secondary",
                             class_name="w-full",
                             disabled=disabled,
                         ):
@@ -517,6 +520,14 @@ def chat_links(client, account, chats, *, disabled=False):
                                     "POST",
                                     f"/accounts/{account['id']}/chats/{link['id']}/topic",
                                 )
+                        if link["topic_id"] is not None and button(
+                            "Переименовать",
+                            f"rename_{link['id']}",
+                            variant="secondary",
+                            class_name="w-full",
+                            disabled=disabled,
+                        ):
+                            st.session_state["renaming_topic"] = (account["id"], link["id"])
                         if button(
                             "Unmute" if link["muted"] else "Mute",
                             f"mute_{link['id']}",
@@ -530,6 +541,49 @@ def chat_links(client, account, chats, *, disabled=False):
                                 "POST",
                                 f"/accounts/{account['id']}/chats/{link['id']}/{verb}",
                             )
+                if link["topic_id"] is not None and st.session_state.get("renaming_topic") == (
+                    account["id"],
+                    link["id"],
+                ):
+                    rename_topic_form(client, account, link, disabled=disabled)
+
+
+def rename_topic_form(client, account, link, *, disabled=False):
+    link_id = link["id"]
+    key = f"rename_value_{link_id}"
+    with st.container(border=True):
+        name = field("Новое название Topic", key)
+        st.caption("От 1 до 128 символов. Изменения названия в MAX больше не переименуют Topic.")
+        with st.container(
+            key=f"rename_form_actions_{link_id}",
+            horizontal=True,
+            horizontal_alignment="right",
+            gap="small",
+        ):
+            save = button(
+                "Сохранить", f"rename_save_{link_id}", variant="secondary", disabled=disabled
+            )
+            cancel = button("Отмена", f"rename_cancel_{link_id}", variant="secondary")
+        if cancel:
+            st.session_state.pop("renaming_topic", None)
+            clear_field(key)
+            st.rerun()
+        if save:
+            name = name.strip()
+            if not 1 <= len(name) <= 128:
+                st.error("Введите название от 1 до 128 символов.")
+                return
+            try:
+                client.request(
+                    "PATCH", f"/accounts/{account['id']}/chats/{link_id}/topic", {"name": name}
+                )
+            except (ApiUnavailable, ApiRejected) as exc:
+                st.error(str(exc))
+                return
+            st.session_state.pop("renaming_topic", None)
+            clear_field(key)
+            st.session_state["notice"] = "Название Topic сохранено"
+            st.rerun()
 
 
 def journal(events):

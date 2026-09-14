@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from maxgate.domain import RelayMessage, join_text, render, utf16_length
+from maxgate.domain import RelayMessage, join_text, render, utf16_length, value
 from maxgate.max.media import AttachmentUnavailable, MediaTooLarge
 from maxgate.max.messages import from_max
 from maxgate.relay.errors import max_api_error, permanent_max_error, reason, thread_missing
@@ -87,8 +87,18 @@ class RelayEngine:
             await self.event("Relay discarded: Inbox not bound within one hour", "WARNING")
             return False
 
+    async def resolve_topic_title(self, link):
+        chat = self.chats.get(link.max_chat_id) or await self.max.get_chat(link.max_chat_id)
+        return await self._title(chat)
+
     async def _topic(self, link):
-        return await ensure_topic(self.store, self.tg, link.id, self.topic_locks)
+        return await ensure_topic(
+            self.store,
+            self.tg,
+            link.id,
+            self.topic_locks,
+            title_resolver=self.resolve_topic_title,
+        )
 
     async def _send(self, link, message, progress):
         link = await self.store.chat(link_id=link.id)
@@ -149,6 +159,17 @@ class RelayEngine:
 
             self._submit(link, run)
 
+    async def message_from_max(self, message):
+        sender = await self.max.user_name(message.sender) if message.sender is not None else "?"
+        forwarded_from = None
+        link = message.link
+        if link and value(link, "type") == "FORWARD":
+            original = value(link, "message")
+            original_sender = value(original, "sender") if original else None
+            if original_sender is not None:
+                forwarded_from = await self.max.user_name(original_sender)
+        return from_max(message, sender=sender, forwarded_from=forwarded_from)
+
     async def max_to_tg(
         self, link, message, progress, *, history=False, timestamp=False, reload=False
     ):
@@ -158,9 +179,8 @@ class RelayEngine:
         existing = await self.store.messages(link.id, max_id=message.id)
         if existing and not progress.get("sent") and not reload:
             return  # MessageLink покрывает Echo и повторные события/Catch-up.
-        sender = await self.max.user_name(message.sender) if message.sender is not None else "?"
         relay = render(
-            from_max(message, sender=sender),
+            await self.message_from_max(message),
             link.max_chat_type,
             owner=message.sender == self.max.me_id,
         )
@@ -417,9 +437,8 @@ class RelayEngine:
                 if not links:
                     return
                 current = await self.store.chat(link_id=link.id)
-                sender = await self.max.user_name(message.sender) if message.sender else "?"
                 relay = render(
-                    from_max(message, sender=sender),
+                    await self.message_from_max(message),
                     link.max_chat_type,
                     owner=message.sender == self.max.me_id,
                 )
@@ -589,19 +608,21 @@ class RelayEngine:
                 return
 
             async def run():
-                current = await self.store.chat(link_id=link.id)
-                if current.max_title == chat.title:
-                    return
-                if current.topic_id is not None and not current.renamed_by_owner:
-                    await self.tg.edit_topic(current.topic_id, chat.title)
-                await self.store.change_chat(link.id, max_title=chat.title)
+                async with self.topic_locks.setdefault(link.id, asyncio.Lock()):
+                    current = await self.store.chat(link_id=link.id)
+                    if current.max_title == chat.title:
+                        return
+                    if current.topic_id is not None and not current.renamed_by_owner:
+                        await self.tg.edit_topic(current.topic_id, chat.title)
+                    await self.store.change_chat(link.id, max_title=chat.title)
 
             self._submit(link, run)
 
     async def topic_edited(self, topic_id, title):
         link = await self.store.chat(topic_id=topic_id)
         if link and title is not None:
-            await self.store.change_chat(link.id, renamed_by_owner=True)
+            async with self.topic_locks.setdefault(link.id, asyncio.Lock()):
+                await self.store.change_chat(link.id, renamed_by_owner=True)
 
     async def delete_command(self, link, command):
         reply = getattr(command, "reply_to_message", None)

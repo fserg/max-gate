@@ -161,3 +161,24 @@ async def test_delete_for_all_participants():
     adapter = MaxClient(client)
     assert await adapter.delete(10, 20)
     client.delete_message.assert_awaited_once_with(10, [20], for_me=False)
+
+
+@pytest.mark.parametrize(
+    "fields,expected",
+    [
+        ({"name": "Анна", "firstName": "Анна", "lastName": "Иванова"}, "Анна Иванова"),
+        ({"name": "Анна", "lastName": "Иванова"}, "Анна Иванова"),
+        ({"name": "Анна"}, "Анна"),
+        ({"name": "Анна Иванова", "lastName": "Иванова"}, "Анна Иванова"),
+        ({"name": "Анна", "firstName": " ", "lastName": " Иванова "}, "Анна Иванова"),
+        ({"firstName": "Анна", "lastName": "Иванова"}, "Анна Иванова"),
+    ],
+)
+async def test_user_name_includes_surname(fields, expected):
+    from pymax import User
+
+    client = SimpleNamespace(
+        on_start=lambda: lambda fn: fn,
+        get_user=AsyncMock(return_value=User(id=2, names=[fields])),
+    )
+    assert await MaxClient(client).user_name(2) == expected

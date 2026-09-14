@@ -59,7 +59,7 @@ def test_render_sender_forward_note():
     assert rendered.text == "😀 Name\n↪️ Переслано от Someone\ntext\n\nℹ️ fallback"
     assert rendered.entities[0] == Entity("bold", 0, 7)
     assert rendered.entities[1].offset == utf16_length(rendered.text.split("text")[0])
-    assert render(message, "dialog").text.startswith("↪️")
+    assert render(message, "dialog").text.startswith("😀 Name\n↪️")
     assert render(message, "dialog", owner=True).text.startswith("Вы\n")
 
 

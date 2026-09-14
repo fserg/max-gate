@@ -503,7 +503,7 @@ async def test_forward_content_media_source_and_outer_mapping(relay):
     outer.text = ""
     await relay.accept_max(outer)
     await relay.queues.drain()
-    assert "Переслано от source\ninside" in relay.tg.sent[0][1].text
+    assert "Переслано от Sender\ninside" in relay.tg.sent[0][1].text
     assert relay.max.download_attachment.call_args.args[:2] == (60, 40)
     link = await relay.store.chat(max_chat_id=10)
     assert len(await relay.store.messages(link.id, max_id=50)) == 1
@@ -1162,3 +1162,73 @@ async def test_delete_retries_loading_complete_multipart_mapping(relay):
     await relay.queues.drain()
     relay.max.delete.assert_awaited_once_with(10, 1)
     assert [c.args for c in relay.tg.delete.call_args_list] == [(100,), (101,), (500,)]
+
+
+@pytest.mark.parametrize("kind", ["CHAT", "DIALOG"])
+@pytest.mark.parametrize("surname", ["Иванова", ""])
+async def test_full_sender_name_and_dialog_topic(relay, kind, surname):
+    from pymax import User
+
+    from maxgate.max.client import MaxClient
+
+    client = NS(
+        on_start=lambda: lambda fn: fn,
+        get_user=AsyncMock(
+            return_value=User(
+                id=2, names=[{"name": "Анна", "firstName": "Анна", "lastName": surname}]
+            )
+        ),
+    )
+    relay.max.user_name = MaxClient(client).user_name
+    relay.max.chat.type = kind
+    relay.max.chat.title = None if kind == "DIALOG" else "Group"
+    relay.max.chat.participants = {1: 0, 2: 0}
+    await relay.accept_max(max_message())
+    await relay.queues.drain()
+    expected = "Анна Иванова" if surname else "Анна"
+    sent = relay.tg.sent[0][1]
+    assert sent.text == expected + "\nhello"
+    assert sent.entities[0].type == "bold"
+    assert sent.entities[0].length == len(expected)
+    if kind == "DIALOG":
+        relay.tg.create_topic.assert_awaited_once_with(expected, "DIALOG")
+
+
+@pytest.mark.parametrize("source_name", [None, "Пётр"])
+async def test_forward_sender_full_name_on_send_and_edit(relay, source_name):
+    relay.max.user_name = AsyncMock(
+        side_effect=lambda uid: {2: "Анна Иванова", 3: "Пётр Петров"}[uid]
+    )
+    original = max_message(40, sender=3).model_copy(update={"text": "inside"})
+    outer = max_message(
+        50, link={"type": "FORWARD", "chatId": 60, "chatName": source_name, "message": original}
+    )
+    await relay.accept_max(outer)
+    await relay.queues.drain()
+    assert relay.tg.sent[0][1].text == "Анна Иванова\n↪️ Переслано от Пётр Петров\ninside"
+    original.text = "edited"
+    outer.link.message.text = "edited"
+    await relay.max_edit(outer)
+    await relay.queues.drain()
+    assert (
+        relay.tg.edit_parts.call_args.args[1].text
+        == "Анна Иванова\n↪️ Переслано от Пётр Петров\nedited"
+    )
+
+
+@pytest.mark.parametrize("existing_topic", [None, 200])
+async def test_dialog_topic_uses_current_name_without_renaming_existing(relay, existing_topic):
+    relay.max.chat.type = "DIALOG"
+    relay.max.chat.title = None
+    relay.max.chat.participants = {1: 0, 2: 0}
+    relay.max.user_name.return_value = "Анна Иванова"
+    link = await relay.store.ensure_chat(10, "DIALOG", "Анна", 0)
+    if existing_topic:
+        await relay.store.change_chat(link.id, topic_id=existing_topic)
+    await relay.accept_max(max_message())
+    await relay.queues.drain()
+    if existing_topic:
+        relay.tg.create_topic.assert_not_awaited()
+    else:
+        relay.tg.create_topic.assert_awaited_once_with("Анна Иванова", "DIALOG")
+    relay.tg.edit_topic.assert_not_awaited()

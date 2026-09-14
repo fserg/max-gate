@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 from typing import Literal
 
@@ -21,6 +22,11 @@ class CreateAccount(BaseModel):
     owner_tg_user_id: int = Field(gt=0)
     inbox_mode: Literal["private", "supergroup"] = "private"
     relay_channels: bool = False
+
+
+class RenameTopic(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True, str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=128)
 
 
 class PatchAccount(BaseModel):
@@ -84,6 +90,7 @@ class InternalApi:
                 web.get("/accounts/{id}/events", self.events),
                 web.get("/accounts/{id}/chats", self.chats),
                 web.post("/accounts/{id}/chats/{link_id}/topic", self.topic),
+                web.patch("/accounts/{id}/chats/{link_id}/topic", self.rename_topic),
                 web.post("/accounts/{id}/chats/{link_id}/{action:mute|unmute}", self.mute),
                 web.post("/accounts/{id}/{action:login|pause|resume|logout}", self.action),
             ]
@@ -218,10 +225,42 @@ class InternalApi:
             bot = self.bot_factory(self.supervisor.crypto.decrypt(account.tg_bot_token_enc))
             try:
                 tg = TgBot("", account, self.supervisor.sessions, bot=bot)
-                link = await ensure_topic(store, tg, link.id, self.supervisor.topic_locks)
+                runner = self.supervisor.runners.get(account.id)
+                relay = runner.relay if runner else None
+                link = await ensure_topic(
+                    store,
+                    tg,
+                    link.id,
+                    self.supervisor.topic_locks,
+                    title_resolver=relay.resolve_topic_title if relay else None,
+                )
             finally:
                 await bot.session.close()
             return web.json_response(chat_json(link))
+
+    async def rename_topic(self, request):
+        data = RenameTopic.model_validate(await request.json())
+        account_id = int(request.match_info["id"])
+        async with self.supervisor.lock(account_id):
+            account = await self._account(request)
+            store = RelayStorage(account.id, self.supervisor.sessions)
+            link_id = int(request.match_info["link_id"])
+            async with self.supervisor.topic_locks.setdefault(link_id, asyncio.Lock()):
+                link = await store.chat(link_id=link_id)
+                if link is None:
+                    raise web.HTTPNotFound(text="ChatLink not found")
+                if link.topic_id is None:
+                    raise web.HTTPBadRequest(text="ChatLink has no Topic")
+                if account.inbox_chat_id is None:
+                    raise web.HTTPPreconditionFailed(text="Bind Inbox with /start first")
+                bot = self.bot_factory(self.supervisor.crypto.decrypt(account.tg_bot_token_enc))
+                try:
+                    tg = TgBot("", account, self.supervisor.sessions, bot=bot)
+                    await tg.edit_topic(link.topic_id, data.name)
+                    link = await store.change_chat(link.id, renamed_by_owner=True)
+                finally:
+                    await bot.session.close()
+                return web.json_response(chat_json(link))
 
     async def mute(self, request):
         account = await self._account(request)

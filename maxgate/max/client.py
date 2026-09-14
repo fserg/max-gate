@@ -153,7 +153,12 @@ class MaxClient:
         user = await self.client.get_user(user_id)
         if user:
             for name in user.names or []:
-                display = name.name or " ".join(n for n in (name.first_name, name.last_name) if n)
+                first = (name.first_name or "").strip()
+                last = (name.last_name or "").strip()
+                display = first or (name.name or "").strip()
+                # Some payloads only have an already complete display name.
+                if last and (first or not (display == last or display.endswith(" " + last))):
+                    display = " ".join(part for part in (display, last) if part)
                 if display:
                     return display
             if user.phone:

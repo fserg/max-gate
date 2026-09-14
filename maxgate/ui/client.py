@@ -50,6 +50,13 @@ class InternalApiClient:
                 404: "Account или ChatLink больше не существует.",
                 502: "Gate не смог выполнить операцию. Проверьте журнал Account.",
             }
+            if method == "PATCH" and path.endswith("/topic"):
+                messages.update(
+                    {
+                        400: "Проверьте название (от 1 до 128 символов) и наличие Topic.",
+                        502: "Telegram не смог переименовать Topic. Проверьте доступ бота к Topic и попробуйте позже.",
+                    }
+                )
             raise ApiRejected(messages.get(exc.code, f"InternalApi: HTTP {exc.code}")) from None
         except (URLError, TimeoutError, OSError, ValueError):
             raise ApiUnavailable("Bridge недоступен. Действия временно недоступны.") from None

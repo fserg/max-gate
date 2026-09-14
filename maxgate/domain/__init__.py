@@ -100,7 +100,7 @@ def render(message: RelayMessage, chat_type: str, *, owner: bool = False) -> Rel
     prefix = ""
     entities = []
     sender = "Вы" if owner else message.sender
-    if sender and (owner or chat_type.lower() in {"group", "chat"}):
+    if sender and (owner or chat_type.lower() in {"group", "chat", "dialog"}):
         prefix = sender + "\n"
         entities.append(Entity("bold", 0, utf16_length(sender)))
     if message.forwarded_from:
