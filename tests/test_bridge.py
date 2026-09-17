@@ -89,6 +89,7 @@ async def test_api_bearer_validation_crud_and_account_isolation(storage, tmp_pat
                 "name": "new",
                 "phone": "+1234567890",
                 "owner_tg_user_id": 5,
+                "extra_owner_tg_user_ids": [6, 6, 7],
                 "tg_bot_token": "fake-new-token",
             }
         )
@@ -98,9 +99,16 @@ async def test_api_bearer_validation_crud_and_account_isolation(storage, tmp_pat
     account_id = json.loads(response.text)["id"]
     account = await supervisor.storage.get(account_id)
     assert crypto.decrypt(account.tg_bot_token_enc) == "fake-new-token"
+    assert account.extra_owner_tg_user_ids == [6, 7]
+    assert account.owner_ids == [5, 6, 7]
     bot.session.close.assert_awaited_once()
     patch = NS(match_info={"id": str(account_id)}, json=AsyncMock(return_value={"name": "renamed"}))
     assert (await api.errors(patch, api.patch)).status == 200
+    owners = NS(
+        match_info={"id": str(account_id)},
+        json=AsyncMock(return_value={"extra_owner_tg_user_ids": [8]}),
+    )
+    assert json.loads((await api.errors(owners, api.patch)).text)["extra_owner_tg_user_ids"] == [8]
     invalid = NS(
         match_info={"id": str(account_id)}, json=AsyncMock(return_value={"state": "active"})
     )
@@ -285,6 +293,21 @@ async def test_duplicate_bot_accounts_conflict(storage, tmp_path, concurrent):
     )
     assert sorted(statuses) == [201, 409]
     assert sum(a.tg_bot_id == 777 for a in await supervisor.storage.all()) == 1
+    await supervisor.close()
+
+
+async def test_extra_owners_patch_keeps_inbox(storage, tmp_path):
+    _, sessions, crypto = storage
+    supervisor = Supervisor(sessions, crypto, NS(data_dir=tmp_path))
+    await supervisor.storage.update(1, inbox_chat_id=100)
+    store = RelayStorage(1, sessions)
+    link = await store.ensure_chat(10, "CHAT", "Title", 0)
+    await store.change_chat(link.id, topic_id=200)
+    await supervisor.patch(1, {"extra_owner_tg_user_ids": [77]})
+    account = await supervisor.storage.get(1)
+    assert account.inbox_chat_id == 100
+    assert account.owner_ids == [1, 77]
+    assert (await store.chat(link_id=link.id)).topic_id == 200
     await supervisor.close()
 
 

@@ -206,15 +206,35 @@ def deadline(events, state):
     return max(0, int(60 - (datetime.now(UTC) - stamp).total_seconds()))
 
 
-def owner_id(value):
-    try:
-        result = int(value)
-        if result > 0:
-            return result
-    except (ValueError, TypeError):
-        pass
-    st.error("Telegram id Owner должен быть положительным целым числом")
-    return None
+MAX_OWNERS = 10
+
+
+def owner_ids(value):
+    """Telegram id Owner из поля: основной первым, остальные через запятую."""
+    parts = [part for part in re.split(r"[\s,;]+", str(value or "").strip()) if part]
+    result = []
+    for part in parts:
+        try:
+            parsed = int(part)
+        except ValueError:
+            parsed = 0
+        if parsed <= 0:
+            st.error("Telegram id Owner: положительные целые числа через запятую")
+            return None
+        if parsed not in result:
+            result.append(parsed)
+    if not result:
+        st.error("Telegram id Owner: положительные целые числа через запятую")
+        return None
+    if len(result) > MAX_OWNERS:
+        st.error(f"Owner не больше {MAX_OWNERS}")
+        return None
+    return result
+
+
+def owner_ids_text(account):
+    ids = [account["owner_tg_user_id"], *(account.get("extra_owner_tg_user_ids") or [])]
+    return ", ".join(str(item) for item in ids)
 
 
 def inbox_mode(key, default="private"):
@@ -249,7 +269,11 @@ def create_account(client, *, disabled=False):
     phone = field("Телефон MAX", "create_phone", placeholder="+7…")
     token = field("Токен Telegram-бота", "create_token", secret=True)
     st.caption("Один бот — одна учетка. Для private Inbox включите Topics у бота в BotFather.")
-    owner = field("Telegram id Owner", "create_owner", placeholder="напр. 123456789")
+    owner = field("Telegram id Owner", "create_owner", placeholder="напр. 123456789, 987654321")
+    st.caption(
+        "Можно несколько через запятую: первый — основной Owner, его личный чат станет Inbox "
+        "в режиме private. Остальные пишут боту только в режиме supergroup."
+    )
     mode = inbox_mode("create_mode")
     channels = ui.switch(label="Переносить Channel", key="create_channels")
     st.caption("По умолчанию Channel не отражаются")
@@ -268,7 +292,7 @@ def create_account(client, *, disabled=False):
             st.session_state["create_error"] = (
                 "Телефон MAX: введите + и от 7 до 15 цифр, например +79991234567."
             )
-        elif (parsed_owner := owner_id(owner)) is not None:
+        elif (parsed_owners := owner_ids(owner)) is not None:
             invoke(
                 client,
                 "POST",
@@ -277,7 +301,8 @@ def create_account(client, *, disabled=False):
                     name=name.strip(),
                     phone=phone.strip(),
                     tg_bot_token=token.strip(),
-                    owner_tg_user_id=parsed_owner,
+                    owner_tg_user_id=parsed_owners[0],
+                    extra_owner_tg_user_ids=parsed_owners[1:],
                     inbox_mode=mode,
                     relay_channels=channels,
                 ),
@@ -414,7 +439,7 @@ def account_settings(client, account, *, disabled=False):
         with columns[0]:
             name = field("Название учетки", f"name_{account_id}", account["name"])
         with columns[1]:
-            owner = field("Owner · Telegram id", f"owner_{account_id}", account["owner_tg_user_id"])
+            owner = field("Owner · Telegram id", f"owner_{account_id}", owner_ids_text(account))
         with columns[2]:
             mode = inbox_mode(f"mode_{account_id}", account["inbox_mode"])
         with columns[3]:
@@ -424,15 +449,17 @@ def account_settings(client, account, *, disabled=False):
                 label="Переносить Channel",
                 key=f"channels_{account_id}",
             )
+        st.caption("Owner: несколько Telegram id через запятую, первый — основной.")
         if save:
-            if (parsed_owner := owner_id(owner)) is not None:
+            if (parsed_owners := owner_ids(owner)) is not None:
                 invoke(
                     client,
                     "PATCH",
                     f"/accounts/{account_id}",
                     dict(
                         name=name,
-                        owner_tg_user_id=parsed_owner,
+                        owner_tg_user_id=parsed_owners[0],
+                        extra_owner_tg_user_ids=parsed_owners[1:],
                         inbox_mode=mode,
                         relay_channels=channels,
                     ),
@@ -768,7 +795,7 @@ def dashboard(client):
                     ("Телефон", account["phone"]),
                     ("Inbox", inbox),
                     ("Каналы", "да" if account["relay_channels"] else "нет"),
-                    ("Владелец TG", account["owner_tg_user_id"]),
+                    ("Владелец TG", owner_ids_text(account)),
                 )
                 rows = "".join(
                     f"<dt>{label}</dt><dd>{escape(str(value))}</dd>" for label, value in details

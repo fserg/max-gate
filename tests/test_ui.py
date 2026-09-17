@@ -24,6 +24,7 @@ class FakeApi:
             name="Dev Account",
             phone="+10000000000",
             owner_tg_user_id=10,
+            extra_owner_tg_user_ids=[],
             inbox_mode="private",
             inbox_chat_id=20,
             relay_channels=False,
@@ -301,6 +302,7 @@ def test_creation_settings_and_delete_use_api(ui):
     )
     assert api.calls[-1][0:2] == ("POST", "/accounts")
     assert api.calls[-1][2]["tg_bot_token"] == "new-bot-secret"
+    assert api.calls[-1][2]["extra_owner_tg_user_ids"] == []
     assert mount_key("create_token") not in app.session_state
     assert "creating_account" not in app.session_state
     click(app, "open_1")
@@ -312,6 +314,31 @@ def test_creation_settings_and_delete_use_api(ui):
     decide(app, "delete_dialog_1_0", True)
     assert not app.exception
     assert api.calls[-1] == ("DELETE", "/accounts/1", None)
+
+
+def test_several_owner_ids_are_split_into_primary_and_extra(ui):
+    app, api = ui
+    sign_in(app, open_account=False)
+    click(app, "create_open")
+    click(
+        app,
+        "create_submit",
+        create_name="Family",
+        create_phone="+1234567890",
+        create_token="new-bot-secret",
+        create_owner="42, 77 77",
+    )
+    assert api.calls[-1][2]["owner_tg_user_id"] == 42
+    assert api.calls[-1][2]["extra_owner_tg_user_ids"] == [77]
+    click(app, "open_1")
+    click(app, "save_1", owner_1="10, 11")
+    assert api.calls[-1][0:2] == ("PATCH", "/accounts/1")
+    assert api.calls[-1][2]["owner_tg_user_id"] == 10
+    assert api.calls[-1][2]["extra_owner_tg_user_ids"] == [11]
+    calls = len(api.calls)
+    click(app, "save_1", owner_1="10, wife")
+    assert any("Telegram id Owner" in e.value for e in app.error)
+    assert len(api.calls) == calls
 
 
 def test_secondary_api_outage_hides_creation(ui):

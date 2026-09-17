@@ -5,7 +5,7 @@ from typing import Literal
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiohttp import web
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -14,6 +14,17 @@ from maxgate.relay.storage import RelayStorage
 from maxgate.tg.bot import TgBot
 from maxgate.tg.topics import ensure_topic
 
+MAX_EXTRA_OWNERS = 9
+
+
+def normalize_extra_owners(value):
+    """Дополнительные Owner: положительные id без повторов, порядок сохраняется."""
+    if value is None:
+        return value
+    if any(item <= 0 for item in value):
+        raise ValueError("Telegram id Owner must be positive")
+    return list(dict.fromkeys(value))
+
 
 class CreateAccount(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -21,8 +32,11 @@ class CreateAccount(BaseModel):
     phone: str = Field(pattern=r"^\+[0-9]{7,15}$")
     tg_bot_token: SecretStr
     owner_tg_user_id: int = Field(gt=0)
+    extra_owner_tg_user_ids: list[int] = Field(default_factory=list, max_length=MAX_EXTRA_OWNERS)
     inbox_mode: Literal["private", "supergroup"] = "private"
     relay_channels: bool = False
+
+    _extra_owners = field_validator("extra_owner_tg_user_ids")(normalize_extra_owners)
 
 
 class RenameTopic(BaseModel):
@@ -34,8 +48,11 @@ class PatchAccount(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     name: str = Field(default=None, min_length=1, max_length=128)
     owner_tg_user_id: int = Field(default=None, gt=0)
+    extra_owner_tg_user_ids: list[int] = Field(default=None, max_length=MAX_EXTRA_OWNERS)
     inbox_mode: Literal["private", "supergroup"] = None
     relay_channels: bool = None
+
+    _extra_owners = field_validator("extra_owner_tg_user_ids")(normalize_extra_owners)
 
 
 def account_json(account):
@@ -46,6 +63,7 @@ def account_json(account):
             "name",
             "phone",
             "owner_tg_user_id",
+            "extra_owner_tg_user_ids",
             "inbox_mode",
             "inbox_chat_id",
             "relay_channels",
@@ -147,6 +165,7 @@ class InternalApi:
             phone=data.phone,
             tg_bot_token_enc=self.supervisor.crypto.encrypt(data.tg_bot_token.get_secret_value()),
             owner_tg_user_id=data.owner_tg_user_id,
+            extra_owner_tg_user_ids=data.extra_owner_tg_user_ids,
             inbox_mode=data.inbox_mode,
             relay_channels=data.relay_channels,
         )

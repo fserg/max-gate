@@ -98,3 +98,14 @@
   (integrity ok, контрольная сумма совпала). Account 1 поднялся `active` на сохранённой Session
   без SMS, Catch-up и polling Telegram запущены; UI открылся по HTTPS. Dev-база отложена
   в `temp/data-before-prod`, чтобы dev не поднимал боевые Account.
+
+## 17 сентября 2026
+
+- Account получил несколько Owner: колонка `accounts.extra_owner_tg_user_ids` (миграция 0004,
+  JSON-список), свойство `Account.owner_ids` (основной первым, без повторов) и проверка доступа
+  в `TgBot` по всему списку — сообщения, правки и реакции принимаются от любого Owner.
+  API `POST/PATCH /accounts` принимают `extra_owner_tg_user_ids` (до 9 id), UI разбирает поле
+  «Telegram id Owner» со списком через запятую: первый — основной. Смена дополнительных Owner
+  не сбрасывает Inbox и Topic, в отличие от смены основного Owner или режима Inbox.
+  В режиме private Inbox остаётся личным чатом основного Owner, поэтому дополнительные Owner
+  имеют смысл при `inbox_mode=supergroup`. `ruff` чисто, `pytest` 224 зелёных.

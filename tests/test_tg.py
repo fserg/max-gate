@@ -26,7 +26,7 @@ def message(**kwargs):
 async def test_owner_checked_by_from_id(storage):
     _, sessions, _ = storage
     fake = SimpleNamespace(send_message=AsyncMock())
-    adapter = TgBot("", SimpleNamespace(owner_tg_user_id=1), sessions, bot=fake)
+    adapter = TgBot("", SimpleNamespace(owner_tg_user_id=1, owner_ids=[1]), sessions, bot=fake)
     handler = AsyncMock()
     foreign = message(from_user={"id": 10, "is_bot": False, "first_name": "Other"}, text="hi")
     await adapter._owner_only(handler, foreign, {})
@@ -35,6 +35,23 @@ async def test_owner_checked_by_from_id(storage):
     handler.assert_awaited_once()
     await adapter._owner_only(handler, foreign.model_copy(update={"text": "/start"}), {})
     fake.send_message.assert_awaited_once()
+
+
+async def test_extra_owner_allowed(storage):
+    _, sessions, _ = storage
+    fake = SimpleNamespace(send_message=AsyncMock())
+    account = SimpleNamespace(
+        owner_tg_user_id=1, extra_owner_tg_user_ids=[7], owner_ids=[1, 7], inbox_chat_id=10
+    )
+    adapter = TgBot("", account, sessions, bot=fake)
+    handler = AsyncMock()
+    wife = message(from_user={"id": 7, "is_bot": False, "first_name": "Extra"}, text="hi")
+    await adapter._owner_only(handler, wife, {})
+    handler.assert_awaited_once()
+    await adapter._owner_only(
+        handler, message(from_user={"id": 8, "is_bot": False, "first_name": "No"}, text="hi"), {}
+    )
+    handler.assert_awaited_once()
 
 
 async def test_inbox_binding_and_topic_colors(storage):
@@ -169,7 +186,9 @@ async def test_edit_growing_caption_keeps_entire_text(storage):
             side_effect=[SimpleNamespace(message_id=2), SimpleNamespace(message_id=3)]
         ),
     )
-    adapter = TgBot("", SimpleNamespace(inbox_chat_id=10, owner_tg_user_id=1), sessions, bot=bot)
+    adapter = TgBot(
+        "", SimpleNamespace(inbox_chat_id=10, owner_tg_user_id=1, owner_ids=[1]), sessions, bot=bot
+    )
     ids = await adapter.edit_parts([1], RelayMessage("a" * 5000), topic_id=2)
     assert ids == [1, 2, 3]
     assert bot.edit_message_caption.call_args.kwargs["caption"] == ""
@@ -206,7 +225,9 @@ async def test_reactions_owner_inbox_filter_and_polling_subscription(storage):
 
     _, sessions, _ = storage
     bot = SimpleNamespace(get_me=AsyncMock())
-    adapter = TgBot("", SimpleNamespace(owner_tg_user_id=1, inbox_chat_id=10), sessions, bot=bot)
+    adapter = TgBot(
+        "", SimpleNamespace(owner_tg_user_id=1, inbox_chat_id=10, owner_ids=[1]), sessions, bot=bot
+    )
     adapter.on_reaction = AsyncMock()
     reaction = MessageReactionUpdated(
         chat={"id": 10, "type": "private"},

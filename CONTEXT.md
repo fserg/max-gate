@@ -19,8 +19,9 @@ _Avoid_: bridge, сервер, инстанс
 _Avoid_: bridge, tenant, связка, пользователь
 
 **Owner**:
-Пользователь Telegram, которому принадлежит Account. Единственный, с кем бот этого Account
-разговаривает.
+Пользователь Telegram, которому принадлежит Account. Бот этого Account разговаривает только
+с Owner. Их может быть несколько: основной Owner (его личный чат становится Inbox в режиме
+private) и дополнительные, которые работают с Account в режиме supergroup.
 _Avoid_: user, admin, хозяин
 
 **Operator**:

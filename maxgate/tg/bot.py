@@ -37,8 +37,11 @@ class TgBot:
         self.dispatcher.edited_message.register(self._edited_message)
         self.dispatcher.message_reaction.register(self._reaction)
 
+    def _is_owner(self, user_id: int) -> bool:
+        return user_id in self.account.owner_ids
+
     async def _owner_only(self, handler, event: Message, data):
-        if not event.from_user or event.from_user.id != self.account.owner_tg_user_id:
+        if not event.from_user or not self._is_owner(event.from_user.id):
             if event.text and event.text.split()[0].split("@")[0] == "/start":
                 await self.bot.send_message(chat_id=event.chat.id, text="Доступ только для Owner")
             return None
@@ -130,7 +133,7 @@ class TgBot:
         if (
             self._in_inbox(event)
             and event.user
-            and event.user.id == self.account.owner_tg_user_id
+            and self._is_owner(event.user.id)
             and self.on_reaction
         ):
             await self.on_reaction(event)

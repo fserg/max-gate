@@ -39,6 +39,9 @@ class Account(Base):
     tg_bot_token_enc: Mapped[str] = mapped_column(Text)
     tg_bot_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     owner_tg_user_id: Mapped[int] = mapped_column(BigInteger)
+    extra_owner_tg_user_ids: Mapped[list[int]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
     inbox_mode: Mapped[str] = mapped_column(default="private")
     inbox_chat_id: Mapped[int | None] = mapped_column(BigInteger)
     relay_channels: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -48,6 +51,11 @@ class Account(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+    @property
+    def owner_ids(self) -> list[int]:
+        """Все Telegram id Owner: основной первым, без повторов."""
+        return list(dict.fromkeys([self.owner_tg_user_id, *(self.extra_owner_tg_user_ids or [])]))
 
 
 class MaxSession(Base):
